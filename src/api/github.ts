@@ -101,12 +101,27 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+/** Wait until rate-limit reset (unix seconds) + small jitter. */
+async function waitUntilReset(
+  resetUnix: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const waitMs = Math.max(0, resetUnix * 1000 - Date.now()) + Math.random() * 500
+  if (waitMs > 0) await sleep(waitMs, signal)
+}
+
 async function fetchPage(
   url: string,
   token: string | undefined,
   signal: AbortSignal | undefined,
   attempt = 0,
-): Promise<{ repos: StarredRepo[]; next: string | null; remaining: number | null; limit: number | null }> {
+): Promise<{
+  repos: StarredRepo[]
+  next: string | null
+  remaining: number | null
+  limit: number | null
+  reset: number | null
+}> {
   if (signal?.aborted) throw new GithubApiError('Aborted', 'ABORT')
 
   const headers: Record<string, string> = {
@@ -158,6 +173,7 @@ async function fetchPage(
     next,
     remaining: remaining != null ? Number(remaining) : null,
     limit: limit != null ? Number(limit) : null,
+    reset: reset != null ? Number(reset) : null,
   }
 }
 
@@ -188,9 +204,16 @@ export async function fetchAllStarred(opts: FetchOpts): Promise<StarredRepo[]> {
 
   while (url) {
     page += 1
-    const { repos, next, remaining, limit } = await fetchPage(url, opts.token, opts.signal)
+    const { repos, next, remaining, limit, reset } = await fetchPage(url, opts.token, opts.signal)
     all.push(...repos)
     opts.onPage?.(page, all.length, remaining, limit)
+
+    // P1.3: after a successful page, if remaining is 0, wait until reset
+    // before fetching the next page (do not wait only after hitting 403).
+    if (next && remaining === 0 && reset != null) {
+      await waitUntilReset(reset, opts.signal)
+    }
+
     url = next
   }
 
