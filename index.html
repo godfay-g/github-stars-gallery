@@ -1,11 +1,43 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="GitHub 收藏图库：人话简介、智能分类、星状图浏览" />
+    <title>GitHub Stars Gallery</title>
+    <meta name="description" content="输入任意 GitHub 用户名，自动分类、一句话看懂每个 Star，用星状图浏览。Browse anyone's GitHub stars as a categorized star map." />
+    <meta name="theme-color" content="#0b0f14" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="GitHub Stars Gallery" />
+    <meta property="og:description" content="Browse anyone's GitHub stars: auto categories, one-line blurbs, star map. 输入任意用户名查看 TA 的 Star。" />
+    <meta name="twitter:card" content="summary" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
-    <title>GitHub 收藏图库</title>
+    <style>
+      html { background: #0b0f14; color: #eef3f9; }
+      html[data-theme='light'] { background: #f6f8fb; color: #111827; }
+    </style>
+    <script>
+      // F2: resolve the theme before first paint (URL ?theme > saved settings > last resolved theme > dark).
+      // Everything here is untrusted input, so only the three known values are accepted.
+      (function () {
+        var ok = { dark: 1, light: 1, system: 1 }
+        var theme = null
+        try {
+          var q = new URLSearchParams(location.search).get('theme')
+          if (q && ok[q]) theme = q
+          if (!theme) {
+            var s = JSON.parse(localStorage.getItem('gsg:settings') || 'null')
+            var p = s && s.prefs && s.prefs.theme
+            if (typeof p === 'string' && ok[p]) theme = p
+          }
+          if (!theme) {
+            var c = localStorage.getItem('gsg:theme')
+            if (c === 'light' || c === 'dark') theme = c
+          }
+        } catch (e) {}
+        if (theme === 'system') theme = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark')
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
