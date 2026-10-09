@@ -26,7 +26,7 @@ type State = {
 const state: State = {
   username: '',
   repos: [],
-  filters: { query: '', language: null, topic: null, excludeForks: false },
+  filters: { query: '', languages: [], topics: [], excludeForks: false },
   sort: 'starred_at',
   view: 'card',
   tags: loadTags(),
@@ -39,6 +39,7 @@ const state: State = {
 }
 
 let abort: AbortController | null = null
+let shellBound = false
 const root = document.querySelector<HTMLDivElement>('#app')!
 
 function qsUser(): string {
@@ -81,6 +82,40 @@ function visibleRepos(): StarredRepo[] {
   return sortRepos(applyFilters(state.repos, state.filters, state.tags), state.sort)
 }
 
+function multiLabel(kind: 'languages' | 'topics'): string {
+  const selected = state.filters[kind]
+  if (!selected.length) return kind === 'languages' ? 'All languages' : 'All topics'
+  if (selected.length === 1) return selected[0]
+  return `${selected.length} selected`
+}
+
+function renderMulti(kind: 'languages' | 'topics', options: string[]): string {
+  const selected = new Set(state.filters[kind])
+  const disabled = !state.repos.length
+  return `
+  <details class="multi" data-multi="${kind}" ${disabled ? 'aria-disabled="true"' : ''}>
+    <summary class="btn multi-summary" ${disabled ? 'tabindex="-1"' : ''}>${escapeHtml(multiLabel(kind))}</summary>
+    <div class="multi-panel" role="group">
+      ${
+        options.length
+          ? options
+              .map(
+                (o) => `
+        <label class="multi-option">
+          <input type="checkbox" data-multi-kind="${kind}" value="${escapeHtml(o)}" ${selected.has(o) ? 'checked' : ''} ${disabled ? 'disabled' : ''}/>
+          <span>${escapeHtml(o)}</span>
+        </label>`,
+              )
+              .join('')
+          : `<p class="multi-empty">No ${kind} yet</p>`
+      }
+      <div class="multi-actions">
+        <button type="button" class="btn btn-ghost" data-multi-clear="${kind}" ${disabled || !selected.size ? 'disabled' : ''}>Clear</button>
+      </div>
+    </div>
+  </details>`
+}
+
 function renderHeader(): string {
   return `
   <header class="app-header">
@@ -94,34 +129,29 @@ function renderHeader(): string {
   </header>`
 }
 
-function renderToolbar(filtered: StarredRepo[]): string {
+function renderToolbar(): string {
   const langs = allLanguages(state.repos)
   const topics = allTopics(state.repos)
+  const has = state.repos.length > 0
   return `
-  <div class="toolbar">
-    <input type="search" id="search" placeholder="Search name, description, owner, topics, local tags…" value="${escapeHtml(state.filters.query)}" ${state.repos.length ? '' : 'disabled'} />
-    <select id="language" ${state.repos.length ? '' : 'disabled'}>
-      <option value="">All languages</option>
-      ${langs.map((l) => `<option value="${escapeHtml(l)}" ${state.filters.language === l ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}
-    </select>
-    <select id="topic" ${state.repos.length ? '' : 'disabled'}>
-      <option value="">All topics</option>
-      ${topics.map((t) => `<option value="${escapeHtml(t)}" ${state.filters.topic === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}
-    </select>
-    <select id="sort" ${state.repos.length ? '' : 'disabled'}>
+  <div class="toolbar" id="toolbar">
+    <input type="search" id="search" placeholder="Search name, description, owner, topics, local tags…" value="${escapeHtml(state.filters.query)}" ${has ? '' : 'disabled'} />
+    ${renderMulti('languages', langs)}
+    ${renderMulti('topics', topics)}
+    <select id="sort" ${has ? '' : 'disabled'}>
       <option value="starred_at" ${state.sort === 'starred_at' ? 'selected' : ''}>Recently starred</option>
       <option value="stars" ${state.sort === 'stars' ? 'selected' : ''}>Most stars</option>
       <option value="updated" ${state.sort === 'updated' ? 'selected' : ''}>Recently updated</option>
       <option value="name" ${state.sort === 'name' ? 'selected' : ''}>Name A–Z</option>
     </select>
-    <label class="meta-row"><input type="checkbox" id="exclude-forks" ${state.filters.excludeForks ? 'checked' : ''} ${state.repos.length ? '' : 'disabled'}/> Exclude forks</label>
+    <label class="meta-row"><input type="checkbox" id="exclude-forks" ${state.filters.excludeForks ? 'checked' : ''} ${has ? '' : 'disabled'}/> Exclude forks</label>
     <div class="btn-group" style="display:flex;gap:.35rem">
-      <button type="button" class="btn ${state.view === 'card' ? 'active' : ''}" id="view-card" ${state.repos.length ? '' : 'disabled'}>Cards</button>
-      <button type="button" class="btn ${state.view === 'list' ? 'active' : ''}" id="view-list" ${state.repos.length ? '' : 'disabled'}>List</button>
+      <button type="button" class="btn ${state.view === 'card' ? 'active' : ''}" id="view-card" ${has ? '' : 'disabled'}>Cards</button>
+      <button type="button" class="btn ${state.view === 'list' ? 'active' : ''}" id="view-list" ${has ? '' : 'disabled'}>List</button>
     </div>
     <div class="spacer"></div>
-    <button type="button" class="btn" id="export-json" ${filtered.length ? '' : 'disabled'}>Export JSON</button>
-    <button type="button" class="btn" id="export-html" ${filtered.length ? '' : 'disabled'}>Export HTML</button>
+    <button type="button" class="btn" id="export-json" ${has ? '' : 'disabled'}>Export JSON</button>
+    <button type="button" class="btn" id="export-html" ${has ? '' : 'disabled'}>Export HTML</button>
   </div>`
 }
 
@@ -137,19 +167,21 @@ function renderStatus(): string {
     parts.push(`<span>API remaining: ${state.remaining}/${state.limit}</span>`)
   }
   if (state.error) parts.push(`<span class="error">${escapeHtml(state.error)}</span>`)
-  return `<div class="status-bar">${parts.join('') || '<span>Enter a GitHub username to load starred repos.</span>'}</div>`
+  return `<div class="status-bar" id="status-bar">${parts.join('') || '<span>Enter a GitHub username to load starred repos.</span>'}</div>`
 }
 
 function renderStats(): string {
-  if (!state.repos.length) return ''
-  const stats = languageStats(applyFilters(state.repos, { ...state.filters, language: null }, state.tags))
+  if (!state.repos.length) return '<div id="stats-root"></div>'
+  const stats = languageStats(
+    applyFilters(state.repos, { ...state.filters, languages: [] }, state.tags),
+  )
   const total = stats.reduce((s, x) => s + x.count, 0) || 1
   const top = stats.slice(0, 8)
   const other = stats.slice(8).reduce((s, x) => s + x.count, 0)
   const segs = [...top]
   if (other) segs.push({ language: 'Other', count: other })
   return `
-  <section class="stats">
+  <section class="stats" id="stats-root">
     <div class="stats-bar">
       ${segs
         .map(
@@ -208,18 +240,18 @@ function renderListItem(r: StarredRepo): string {
 
 function renderMain(): string {
   if (!state.repos.length && !state.loading) {
-    return `<main class="main"><div class="empty"><h2>Turn starred repos into a searchable gallery</h2>
+    return `<main class="main" id="main-root"><div class="empty"><h2>Turn starred repos into a searchable gallery</h2>
       <p>Load any public GitHub username. Optional PAT raises rate limits. Tags stay in your browser only.</p>
       <p>Try <a href="?user=godfay-g">?user=godfay-g</a> or your own username.</p></div></main>`
   }
   const list = visibleRepos()
   if (!list.length && state.repos.length) {
-    return `<main class="main"><div class="empty"><h2>No matches</h2><p>Try clearing filters or search.</p></div></main>`
+    return `<main class="main" id="main-root"><div class="empty"><h2>No matches</h2><p>Try clearing filters or search.</p></div></main>`
   }
   if (state.view === 'list') {
-    return `<main class="main"><div class="list">${list.map(renderListItem).join('')}</div></main>`
+    return `<main class="main" id="main-root"><div class="list">${list.map(renderListItem).join('')}</div></main>`
   }
-  return `<main class="main"><div class="grid">${list.map(renderCard).join('')}</div></main>`
+  return `<main class="main" id="main-root"><div class="grid">${list.map(renderCard).join('')}</div></main>`
 }
 
 function renderFooter(): string {
@@ -267,78 +299,151 @@ function renderTokenModal(): void {
   })
 }
 
-function bind(): void {
-  document.getElementById('user-form')?.addEventListener('submit', (e) => {
+function syncMultiFromDom(kind: 'languages' | 'topics'): void {
+  const boxes = root.querySelectorAll<HTMLInputElement>(`input[data-multi-kind="${kind}"]`)
+  state.filters[kind] = [...boxes].filter((b) => b.checked).map((b) => b.value)
+}
+
+/** Update status / stats / main without tearing down the search input. */
+function renderResults(): void {
+  const status = document.getElementById('status-bar')
+  const stats = document.getElementById('stats-root')
+  const main = document.getElementById('main-root')
+  if (!status || !stats || !main) {
+    render()
+    return
+  }
+  status.outerHTML = renderStatus()
+  stats.outerHTML = renderStats()
+  main.outerHTML = renderMain()
+
+  const n = visibleRepos().length
+  const ej = document.getElementById('export-json') as HTMLButtonElement | null
+  const eh = document.getElementById('export-html') as HTMLButtonElement | null
+  if (ej) ej.disabled = n === 0
+  if (eh) eh.disabled = n === 0
+
+  // Refresh multi summary labels without closing open panels if possible
+  for (const kind of ['languages', 'topics'] as const) {
+    const details = root.querySelector<HTMLDetailsElement>(`details[data-multi="${kind}"]`)
+    const summary = details?.querySelector('summary')
+    if (summary) summary.textContent = multiLabel(kind)
+    const clearBtn = details?.querySelector<HTMLButtonElement>(`[data-multi-clear="${kind}"]`)
+    if (clearBtn) clearBtn.disabled = !state.filters[kind].length
+  }
+}
+
+function bindShell(): void {
+  if (shellBound) return
+  shellBound = true
+
+  root.addEventListener('submit', (e) => {
+    const form = e.target as HTMLElement
+    if (!(form instanceof HTMLFormElement) || form.id !== 'user-form') return
     e.preventDefault()
     const u = (document.getElementById('username') as HTMLInputElement).value.trim().replace(/^@/, '')
     void loadUser(u, false)
   })
-  document.getElementById('btn-refresh')?.addEventListener('click', () => {
-    if (state.username) void loadUser(state.username, true)
-  })
-  document.getElementById('btn-token')?.addEventListener('click', renderTokenModal)
-  document.getElementById('search')?.addEventListener('input', (e) => {
-    state.filters.query = (e.target as HTMLInputElement).value
-    render()
-    ;(document.getElementById('search') as HTMLInputElement)?.focus()
-    const el = document.getElementById('search') as HTMLInputElement
-    if (el) {
-      const len = el.value.length
-      el.setSelectionRange(len, len)
+
+  root.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement
+    if (t.id === 'btn-refresh' || t.closest?.('#btn-refresh')) {
+      if (state.username) void loadUser(state.username, true)
+      return
     }
-  })
-  document.getElementById('language')?.addEventListener('change', (e) => {
-    state.filters.language = (e.target as HTMLSelectElement).value || null
-    render()
-  })
-  document.getElementById('topic')?.addEventListener('change', (e) => {
-    state.filters.topic = (e.target as HTMLSelectElement).value || null
-    render()
-  })
-  document.getElementById('sort')?.addEventListener('change', (e) => {
-    state.sort = (e.target as HTMLSelectElement).value as SortKey
-    render()
-  })
-  document.getElementById('exclude-forks')?.addEventListener('change', (e) => {
-    state.filters.excludeForks = (e.target as HTMLInputElement).checked
-    render()
-  })
-  document.getElementById('view-card')?.addEventListener('click', () => {
-    state.view = 'card'
-    render()
-  })
-  document.getElementById('view-list')?.addEventListener('click', () => {
-    state.view = 'list'
-    render()
-  })
-  document.getElementById('export-json')?.addEventListener('click', () => {
-    exportJson(state.username, visibleRepos())
-  })
-  document.getElementById('export-html')?.addEventListener('click', () => {
-    exportHtml(state.username, visibleRepos())
-  })
-  root.querySelectorAll<HTMLButtonElement>('[data-tag-save]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const name = btn.getAttribute('data-tag-save')!
+    if (t.id === 'btn-token' || t.closest?.('#btn-token')) {
+      renderTokenModal()
+      return
+    }
+    if (t.id === 'view-card') {
+      state.view = 'card'
+      render()
+      return
+    }
+    if (t.id === 'view-list') {
+      state.view = 'list'
+      render()
+      return
+    }
+    if (t.id === 'export-json') {
+      exportJson(state.username, visibleRepos())
+      return
+    }
+    if (t.id === 'export-html') {
+      exportHtml(state.username, visibleRepos())
+      return
+    }
+    const clear = t.closest?.('[data-multi-clear]') as HTMLElement | null
+    if (clear) {
+      const kind = clear.getAttribute('data-multi-clear') as 'languages' | 'topics'
+      state.filters[kind] = []
+      const details = root.querySelector<HTMLDetailsElement>(`details[data-multi="${kind}"]`)
+      details?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((c) => {
+        c.checked = false
+      })
+      renderResults()
+      return
+    }
+    const save = t.closest?.('[data-tag-save]') as HTMLElement | null
+    if (save) {
+      const name = save.getAttribute('data-tag-save')!
       const input = root.querySelector<HTMLInputElement>(`[data-tag-input="${CSS.escape(name)}"]`)
       if (!input) return
-      const tags = input.value.split(',').map((t) => t.trim()).filter(Boolean)
+      const tags = input.value
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean)
       state.tags = setRepoTags(state.tags, name, tags)
-      render()
-    })
+      renderResults()
+    }
+  })
+
+  root.addEventListener('input', (e) => {
+    const t = e.target as HTMLElement
+    if (t.id === 'search') {
+      state.filters.query = (t as HTMLInputElement).value
+      renderResults()
+      return
+    }
+  })
+
+  root.addEventListener('change', (e) => {
+    const t = e.target as HTMLElement
+    if (t.id === 'sort') {
+      state.sort = (t as HTMLSelectElement).value as SortKey
+      renderResults()
+      return
+    }
+    if (t.id === 'exclude-forks') {
+      state.filters.excludeForks = (t as HTMLInputElement).checked
+      renderResults()
+      return
+    }
+    const box = t as HTMLInputElement
+    if (box.matches?.('input[data-multi-kind]')) {
+      const kind = box.getAttribute('data-multi-kind') as 'languages' | 'topics'
+      syncMultiFromDom(kind)
+      renderResults()
+    }
   })
 }
 
 function render(): void {
-  const filtered = visibleRepos()
+  const searchEl = document.getElementById('search') as HTMLInputElement | null
+  const searchFocused = document.activeElement === searchEl
+  const searchPos = searchEl ? searchEl.selectionStart : null
+
   root.innerHTML =
-    renderHeader() +
-    renderToolbar(filtered) +
-    renderStatus() +
-    renderStats() +
-    renderMain() +
-    renderFooter()
-  bind()
+    renderHeader() + renderToolbar() + renderStatus() + renderStats() + renderMain() + renderFooter()
+  bindShell()
+
+  if (searchFocused) {
+    const el = document.getElementById('search') as HTMLInputElement | null
+    if (el) {
+      el.focus()
+      if (searchPos != null) el.setSelectionRange(searchPos, searchPos)
+    }
+  }
 }
 
 async function loadUser(username: string, force: boolean): Promise<void> {
@@ -349,6 +454,7 @@ async function loadUser(username: string, force: boolean): Promise<void> {
   state.loading = true
   state.error = null
   state.progress = force ? 'Refreshing…' : 'Loading…'
+  state.filters = { ...state.filters, languages: [], topics: [] }
   setUrlUser(username)
   if (force) clearCache(username)
   render()
@@ -362,7 +468,10 @@ async function loadUser(username: string, force: boolean): Promise<void> {
         state.progress = page === 0 ? `Cache hit · ${acc} repos` : `Page ${page} · ${acc} repos`
         state.remaining = remaining
         state.limit = limit
-        render()
+        // Progress only — keep search/filter DOM stable where possible
+        const status = document.getElementById('status-bar')
+        if (status) status.outerHTML = renderStatus()
+        else render()
       },
     })
     state.repos = repos
