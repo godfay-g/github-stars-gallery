@@ -5,15 +5,11 @@ import { clearCache } from './api/cache'
 import { loadTags, setRepoTags } from './state/tags'
 import { allLanguages, applyFilters, languageStats, sortRepos } from './lib/filter'
 import { exportHtml, exportJson } from './lib/export'
-import {
-  buildCategoryBuckets,
-  categorizeRepo,
-  categoryColor,
-  humanBlurb,
-  type CategoryId,
-} from './lib/categories'
+import { buildCategoryBuckets, categorizeRepo, categoryColor, humanBlurb, type CategoryId } from './lib/categories'
 import { formatRelative, formatStars, languageColor, type Locale } from './lib/format'
+import { avatarUrl, escapeHtml } from './lib/html'
 import { loadLocale, saveLocale, t, type Dict } from './i18n'
+import { StarMap, type StarMapLabels } from './starmap/StarMap'
 
 type State = {
   username: string
@@ -30,9 +26,6 @@ type State = {
   token: string
   locale: Locale
   editingTag: string | null
-  mapZoom: number
-  mapPanX: number
-  mapPanY: number
   mapFocus: CategoryId | null
   advancedOpen: boolean
 }
@@ -52,16 +45,15 @@ const state: State = {
   token: loadToken(),
   locale: loadLocale(),
   editingTag: null,
-  mapZoom: 1,
-  mapPanX: 0,
-  mapPanY: 0,
   mapFocus: null,
   advancedOpen: false,
 }
 
 let abort: AbortController | null = null
 let shellBound = false
-let mapGesturesBound = false
+/** True only while doing a full-page render, so entrance animations don't replay on partial updates (fixes chip flicker). */
+let entering = false
+let starMap: StarMap | null = null
 const root = document.querySelector<HTMLDivElement>('#app')!
 
 function d(): Dict {
@@ -79,16 +71,55 @@ function setUrlUser(username: string): void {
   history.replaceState(null, '', url)
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+function fx(): string {
+  return entering ? 'fade-in' : ''
 }
 
-function avatarUrl(login: string): string {
-  return `https://github.com/${encodeURIComponent(login || 'ghost')}.png?size=96`
+function mapLabels(): StarMapLabels {
+  const dict = d()
+  return {
+    back: dict.backToMap,
+    zoomIn: dict.zoomIn,
+    zoomOut: dict.zoomOut,
+    fit: dict.zoomReset,
+    hint: dict.starMapHint,
+    tipExpand: dict.mapTipExpand,
+    tipOpen: dict.mapTipOpen,
+    tipBack: dict.mapTipBack,
+    more: (n) => dict.mapMore.replace('{n}', String(n)),
+  }
+}
+
+function getStarMap(): StarMap {
+  if (!starMap) {
+    starMap = new StarMap({
+      locale: state.locale,
+      labels: mapLabels(),
+      onFocusChange: (cat) => {
+        state.mapFocus = cat
+        state.filters.categories = cat ? [cat] : []
+        // Let the expand/collapse animation own the first ~400ms; heavy card DOM lands after.
+        updateUI(true)
+      },
+      onMore: () => {
+        document.getElementById('results-root')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      },
+    })
+  }
+  return starMap
+}
+
+/** Push current state into the (persistent) star map: data, locale, filter, focus. Never re-creates it. */
+function syncStarMap(): void {
+  if (!starMap) return
+  starMap.setUser(state.username)
+  starMap.setData(state.repos)
+  starMap.setLocale(state.locale, mapLabels())
+  starMap.setFilter({
+    visible: sortRepos(applyFilters(state.repos, { ...state.filters, categories: [] }, state.tags), state.sort),
+    selectedCats: state.filters.categories,
+  })
+  if (starMap.focusCat !== state.mapFocus) starMap.focus(state.mapFocus, false)
 }
 
 function visibleRepos(): StarredRepo[] {
@@ -150,7 +181,7 @@ function renderChipRow(
   const selected = new Set(state.filters[kind])
   const disabled = !state.repos.length
   return `
-  <div class="chip-row fade-in" data-chip-kind="${kind}">
+  <div class="chip-row" data-chip-kind="${kind}">
     <button type="button" class="chip-filter ${selected.size === 0 ? 'active' : ''}" data-chip-all="${kind}" ${disabled ? 'disabled' : ''}>${escapeHtml(allLabel)}</button>
     ${items
       .map(
@@ -229,7 +260,7 @@ function renderOverview(): string {
   const buckets = buildCategoryBuckets(state.repos, state.locale)
 
   return `
-  <section class="overview fade-in" id="stats-root">
+  <section class="overview ${fx()}" id="stats-root">
     <div class="overview-head">
       <h2>${escapeHtml(dict.overview)}</h2>
       <div class="overview-total"><span class="num">${formatStars(total, state.locale)}</span><span class="lbl">${escapeHtml(dict.total)}</span></div>
@@ -282,105 +313,6 @@ function renderOverview(): string {
   </section>`
 }
 
-function renderStarMap(): string {
-  const dict = d()
-  const source = applyFilters(
-    state.repos,
-    { ...state.filters, categories: state.mapFocus ? [state.mapFocus] : state.filters.categories },
-    state.tags,
-  )
-  const buckets = buildCategoryBuckets(
-    state.mapFocus ? state.repos.filter((r) => categorizeRepo(r) === state.mapFocus) : applyFilters(state.repos, { ...state.filters, categories: [] }, state.tags),
-    state.locale,
-  )
-  const cx = 400
-  const cy = 300
-  const radius = 210
-  const focus = state.mapFocus
-  const focusBucket = focus ? buckets.find((b) => b.id === focus) : null
-
-  let nodes = ''
-  let links = ''
-
-  if (focus && focusBucket) {
-    const repos = sortRepos(focusBucket.repos, state.sort).slice(0, 18)
-    const n = Math.max(repos.length, 1)
-    repos.forEach((r, i) => {
-      const angle = (Math.PI * 2 * i) / n - Math.PI / 2
-      const x = cx + Math.cos(angle) * (radius - 20)
-      const y = cy + Math.sin(angle) * (radius - 20)
-      links += `<line class="map-link" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${focusBucket.color}" />`
-      nodes += `
-        <g class="map-node repo-node" transform="translate(${x},${y})" data-open-url="${escapeHtml(r.html_url)}">
-          <circle r="22" fill="#161b22" stroke="${focusBucket.color}" stroke-width="2"/>
-          <image href="${avatarUrl(r.owner_login)}" x="-14" y="-14" width="28" height="28" clip-path="circle(14px at 14px 14px)"/>
-          <title>${escapeHtml(r.full_name)} — ${escapeHtml(humanBlurb(r, state.locale))}</title>
-          <text y="36" text-anchor="middle" class="map-label">${escapeHtml((r.full_name.split('/')[1] ?? r.full_name).slice(0, 14))}</text>
-        </g>`
-    })
-    nodes += `
-      <g class="map-node center-node" transform="translate(${cx},${cy})" data-map-back="1">
-        <circle r="46" fill="${focusBucket.color}" opacity="0.2"/>
-        <circle r="34" fill="#0d1117" stroke="${focusBucket.color}" stroke-width="3"/>
-        <text y="-4" text-anchor="middle" class="map-center-title">${escapeHtml(focusBucket.label)}</text>
-        <text y="14" text-anchor="middle" class="map-center-sub">${focusBucket.repos.length}</text>
-      </g>`
-  } else {
-    const n = Math.max(buckets.length, 1)
-    buckets.forEach((b, i) => {
-      const angle = (Math.PI * 2 * i) / n - Math.PI / 2
-      const x = cx + Math.cos(angle) * radius
-      const y = cy + Math.sin(angle) * radius
-      const size = 28 + Math.min(22, b.repos.length)
-      links += `<line class="map-link" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${b.color}" />`
-      nodes += `
-        <g class="map-node cat-node" transform="translate(${x},${y})" data-map-cat="${b.id}">
-          <circle r="${size}" fill="${b.color}" opacity="0.22"/>
-          <circle r="${size - 10}" fill="#121820" stroke="${b.color}" stroke-width="2.5"/>
-          <text y="-2" text-anchor="middle" class="map-cat-count">${b.repos.length}</text>
-          <text y="16" text-anchor="middle" class="map-label">${escapeHtml(b.label.split(' / ')[0])}</text>
-          <title>${escapeHtml(b.label)} · ${b.repos.length}</title>
-        </g>`
-    })
-    const label = state.username || 'You'
-    nodes += `
-      <g class="map-node center-node" transform="translate(${cx},${cy})">
-        <circle r="52" fill="url(#centerGlow)"/>
-        <circle r="38" fill="#0d1117" stroke="#f0c14b" stroke-width="3"/>
-        <image href="${avatarUrl(state.username)}" x="-22" y="-22" width="44" height="44" clip-path="circle(22px at 22px 22px)"/>
-        <text y="58" text-anchor="middle" class="map-center-title">@${escapeHtml(label)}</text>
-      </g>`
-  }
-
-  return `
-  <div class="star-map-wrap fade-in" id="star-map-root">
-    <div class="star-map-toolbar">
-      <p class="muted">${escapeHtml(dict.starMapHint)}</p>
-      <div class="star-map-actions">
-        ${focus ? `<button type="button" class="btn" id="btn-map-back">${escapeHtml(dict.backToMap)}</button>` : ''}
-        <button type="button" class="btn" data-zoom="in" title="${escapeHtml(dict.zoomIn)}">＋</button>
-        <button type="button" class="btn" data-zoom="out" title="${escapeHtml(dict.zoomOut)}">－</button>
-        <button type="button" class="btn" data-zoom="reset" title="${escapeHtml(dict.zoomReset)}">⟲</button>
-      </div>
-    </div>
-    <div class="star-map-viewport" id="star-map-viewport">
-      <svg class="star-map" viewBox="0 0 800 600" role="img" aria-label="${escapeHtml(dict.map)}">
-        <defs>
-          <radialGradient id="centerGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#f0c14b" stop-opacity="0.45"/>
-            <stop offset="100%" stop-color="#f0c14b" stop-opacity="0"/>
-          </radialGradient>
-        </defs>
-        <g class="star-map-stage" id="star-map-stage" style="transform:translate(${state.mapPanX}px,${state.mapPanY}px) scale(${state.mapZoom}); transform-origin:400px 300px;">
-          ${links}
-          ${nodes}
-        </g>
-      </svg>
-    </div>
-    <p class="muted map-foot">${escapeHtml(dict.shown)} ${source.length} / ${state.repos.length}</p>
-  </div>`
-}
-
 function renderCard(r: StarredRepo): string {
   const dict = d()
   const local = state.tags[r.full_name] ?? []
@@ -390,7 +322,7 @@ function renderCard(r: StarredRepo): string {
   const catColor = categoryColor(cat)
   const name = r.full_name.split('/')
   return `
-  <article class="card gallery-card fade-in" data-id="${r.id}">
+  <article class="card gallery-card ${fx()}" data-id="${r.id}">
     <a class="card-hit" href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">
       <div class="card-top">
         <img class="avatar" src="${avatarUrl(r.owner_login)}" alt="" loading="lazy" width="48" height="48"/>
@@ -431,7 +363,7 @@ function renderCard(r: StarredRepo): string {
 function renderListItem(r: StarredRepo): string {
   const blurb = humanBlurb(r, state.locale)
   return `
-  <a class="list-item gallery-list fade-in" href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">
+  <a class="list-item gallery-list ${fx()}" href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">
     <img class="avatar sm" src="${avatarUrl(r.owner_login)}" alt="" loading="lazy" width="36" height="36"/>
     <div class="list-body">
       <strong>${escapeHtml(r.full_name)}</strong>
@@ -466,29 +398,58 @@ function renderMain(): string {
   }
 
   if (state.view === 'map') {
-    const list = visibleRepos()
     return `<main class="main" id="main-root">
-      ${renderStarMap()}
-      ${
-        state.mapFocus
-          ? `<div class="grid gallery-grid map-follow">${list.map(renderCard).join('')}</div>`
-          : ''
-      }
+      <div id="star-map-slot"></div>
+      <div id="results-root">${renderResultsInner()}</div>
     </main>`
   }
+  return `<main class="main" id="main-root"><div id="results-root">${renderResultsInner()}</div></main>`
+}
 
+/** Everything below the star map that depends on filters. The star map itself is never in here. */
+function renderResultsInner(): string {
+  const dict = d()
   const list = visibleRepos()
+  if (state.view === 'map') {
+    const foot = `<p class="muted map-foot">${escapeHtml(dict.shown)} ${list.length} / ${state.repos.length}</p>`
+    return state.mapFocus ? `${foot}<div class="grid gallery-grid map-follow" id="results-grid">${progressiveCards(list)}</div>` : foot
+  }
   if (!list.length) {
-    return `<main class="main" id="main-root"><div class="empty fade-in">
+    return `<div class="empty ${fx()}">
       <h2>${escapeHtml(dict.noMatchTitle)}</h2>
       <p>${escapeHtml(dict.noMatchBody)}</p>
       <button type="button" class="btn btn-primary" id="btn-clear-filters-empty">${escapeHtml(dict.clearFilters)}</button>
-    </div></main>`
+    </div>`
   }
-  if (state.view === 'list') {
-    return `<main class="main" id="main-root"><div class="list">${list.map(renderListItem).join('')}</div></main>`
+  if (state.view === 'list') return `<div class="list">${list.map(renderListItem).join('')}</div>`
+  return `<div class="grid gallery-grid" id="results-grid">${progressiveCards(list)}</div>`
+}
+
+/**
+ * Render the first chunk of cards synchronously and stream the rest in idle time, so a
+ * 1000+ star account never blocks the main thread (and the star map animation) for 100ms+.
+ */
+const CARD_CHUNK = 24
+let pendingCards: StarredRepo[] = []
+let cardGen = 0
+function progressiveCards(list: StarredRepo[]): string {
+  cardGen++
+  pendingCards = list.slice(CARD_CHUNK)
+  if (pendingCards.length) {
+    const gen = cardGen
+    const idle = (cb: () => void) =>
+      'requestIdleCallback' in window ? requestIdleCallback(cb, { timeout: 300 }) : setTimeout(cb, 16)
+    const pump = () => {
+      if (gen !== cardGen) return
+      const grid = document.getElementById('results-grid')
+      if (!grid) return
+      const chunk = pendingCards.splice(0, CARD_CHUNK)
+      grid.insertAdjacentHTML('beforeend', chunk.map(renderCard).join(''))
+      if (pendingCards.length) idle(pump)
+    }
+    idle(pump)
   }
-  return `<main class="main" id="main-root"><div class="grid gallery-grid">${list.map(renderCard).join('')}</div></main>`
+  return list.slice(0, CARD_CHUNK).map(renderCard).join('')
 }
 
 function renderAdvanced(): string {
@@ -556,90 +517,58 @@ function renderTokenModal(): void {
   })
 }
 
-function applyMapTransform(): void {
-  const stage = document.getElementById('star-map-stage')
-  if (!stage) return
-  stage.style.transform = `translate(${state.mapPanX}px, ${state.mapPanY}px) scale(${state.mapZoom})`
-  stage.style.transformOrigin = '400px 300px'
-}
-
-function bindMapGestures(): void {
-  const viewport = document.getElementById('star-map-viewport')
-  if (!viewport || mapGesturesBound) return
-  mapGesturesBound = true
-  let dragging = false
-  let lastX = 0
-  let lastY = 0
-
-  viewport.addEventListener(
-    'wheel',
-    (e) => {
-      e.preventDefault()
-      const delta = e.deltaY > 0 ? -0.08 : 0.08
-      state.mapZoom = Math.min(2.4, Math.max(0.55, state.mapZoom + delta))
-      applyMapTransform()
-    },
-    { passive: false },
-  )
-
-  viewport.addEventListener('pointerdown', (e) => {
-    dragging = true
-    lastX = e.clientX
-    lastY = e.clientY
-    viewport.setPointerCapture(e.pointerId)
-  })
-  viewport.addEventListener('pointermove', (e) => {
-    if (!dragging) return
-    state.mapPanX += e.clientX - lastX
-    state.mapPanY += e.clientY - lastY
-    lastX = e.clientX
-    lastY = e.clientY
-    applyMapTransform()
-  })
-  const end = () => {
-    dragging = false
-  }
-  viewport.addEventListener('pointerup', end)
-  viewport.addEventListener('pointercancel', end)
-}
-
-function renderResults(): void {
-  const status = document.getElementById('status-bar')
-  const stats = document.getElementById('stats-root')
-  const main = document.getElementById('main-root')
-  if (!status || !stats || !main) {
-    render()
-    return
-  }
+function withSearchFocus(fn: () => void): void {
   const searchEl = document.getElementById('search') as HTMLInputElement | null
   const focused = document.activeElement === searchEl
   const pos = searchEl?.selectionStart ?? null
-
-  mapGesturesBound = false
-  status.outerHTML = renderStatus()
-  stats.outerHTML = renderOverview()
-  main.outerHTML = renderMain()
-  bindMapGestures()
-
+  fn()
   if (focused) {
     const el = document.getElementById('search') as HTMLInputElement | null
-    if (el) {
+    if (el && document.activeElement !== el) {
       el.focus()
       if (pos != null) el.setSelectionRange(pos, pos)
     }
   }
 }
 
-function focusCategory(id: CategoryId): void {
-  state.mapFocus = id
-  state.filters.categories = [id]
-  state.mapZoom = 1
-  state.mapPanX = 0
-  state.mapPanY = 0
-  if (state.view !== 'map') state.view = 'map'
-  renderResults()
-  // also refresh chips in toolbar
-  render()
+/** Partial update: status, overview, results list, and star-map filter. Does NOT touch the star map container. */
+function renderResults(): void {
+  clearTimeout(deferredResults)
+  const status = document.getElementById('status-bar')
+  const stats = document.getElementById('stats-root')
+  const results = document.getElementById('results-root')
+  if (!status || !stats || !results) {
+    render()
+    return
+  }
+  withSearchFocus(() => {
+    status.outerHTML = renderStatus()
+    // Overview content only depends on the full repo set; just sync the active category pills.
+    for (const pill of stats.querySelectorAll<HTMLElement>('.cat-pill')) {
+      pill.classList.toggle('active', state.filters.categories.includes(pill.dataset.chipValue ?? ''))
+    }
+    results.innerHTML = renderResultsInner()
+  })
+  syncStarMap()
+}
+
+/** Filter/focus change: refresh toolbar chips + results without a full-page render. */
+let deferredResults = 0
+function updateUI(deferResults = false): void {
+  const toolbar = document.getElementById('toolbar')
+  if (!toolbar) {
+    render()
+    return
+  }
+  withSearchFocus(() => {
+    toolbar.outerHTML = renderToolbar()
+  })
+  clearTimeout(deferredResults)
+  if (deferResults && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const status = document.getElementById('status-bar')
+    if (status) status.outerHTML = renderStatus()
+    deferredResults = window.setTimeout(renderResults, 650)
+  } else renderResults()
 }
 
 function bindShell(): void {
@@ -696,36 +625,7 @@ function bindShell(): void {
     }
     if (target.id === 'btn-clear-filters' || target.id === 'btn-clear-filters-empty') {
       clearFilters()
-      render()
-      return
-    }
-    if (target.id === 'btn-map-back' || target.closest?.('[data-map-back]')) {
-      state.mapFocus = null
-      state.filters.categories = []
-      render()
-      return
-    }
-    const zoom = target.closest?.('[data-zoom]') as HTMLElement | null
-    if (zoom) {
-      const kind = zoom.getAttribute('data-zoom')
-      if (kind === 'in') state.mapZoom = Math.min(2.4, state.mapZoom + 0.15)
-      if (kind === 'out') state.mapZoom = Math.max(0.55, state.mapZoom - 0.15)
-      if (kind === 'reset') {
-        state.mapZoom = 1
-        state.mapPanX = 0
-        state.mapPanY = 0
-      }
-      applyMapTransform()
-      return
-    }
-    const catNode = target.closest?.('[data-map-cat]') as HTMLElement | null
-    if (catNode) {
-      focusCategory(catNode.getAttribute('data-map-cat') as CategoryId)
-      return
-    }
-    const openUrl = target.closest?.('[data-open-url]') as HTMLElement | null
-    if (openUrl) {
-      window.open(openUrl.getAttribute('data-open-url')!, '_blank', 'noopener')
+      updateUI()
       return
     }
     if (target.id === 'export-json') {
@@ -742,7 +642,7 @@ function bindShell(): void {
       const kind = all.getAttribute('data-chip-all') as 'languages' | 'topics' | 'categories'
       state.filters[kind] = []
       if (kind === 'categories') state.mapFocus = null
-      render()
+      updateUI()
       return
     }
     const chip = target.closest?.('[data-chip-value]') as HTMLElement | null
@@ -753,7 +653,7 @@ function bindShell(): void {
       if (kind === 'categories') {
         state.mapFocus = state.filters.categories.length === 1 ? (state.filters.categories[0] as CategoryId) : null
       }
-      render()
+      updateUI()
       return
     }
 
@@ -804,34 +704,32 @@ function bindShell(): void {
     }
     if (el.id === 'exclude-forks') {
       state.filters.excludeForks = (el as HTMLInputElement).checked
-      renderResults()
+      updateUI()
     }
   })
 }
 
 function render(): void {
-  const searchEl = document.getElementById('search') as HTMLInputElement | null
-  const searchFocused = document.activeElement === searchEl
-  const searchPos = searchEl ? searchEl.selectionStart : null
-  mapGesturesBound = false
-
-  root.innerHTML =
-    renderHeader() +
-    renderToolbar() +
-    renderStatus() +
-    renderOverview() +
-    renderMain() +
-    renderAdvanced() +
-    renderFooter()
+  // The star map is mounted once: detach its host before wiping the page, re-attach after.
+  starMap?.detach()
+  entering = true
+  withSearchFocus(() => {
+    root.innerHTML =
+      renderHeader() +
+      renderToolbar() +
+      renderStatus() +
+      renderOverview() +
+      renderMain() +
+      renderAdvanced() +
+      renderFooter()
+  })
+  entering = false
   bindShell()
-  bindMapGestures()
-
-  if (searchFocused) {
-    const el = document.getElementById('search') as HTMLInputElement | null
-    if (el) {
-      el.focus()
-      if (searchPos != null) el.setSelectionRange(searchPos, searchPos)
-    }
+  const slot = document.getElementById('star-map-slot')
+  if (slot && state.repos.length) {
+    const map = getStarMap()
+    syncStarMap()
+    map.attach(slot)
   }
 }
 
@@ -846,9 +744,6 @@ async function loadUser(username: string, force: boolean): Promise<void> {
   state.filters = { query: '', languages: [], topics: [], categories: [], excludeForks: false }
   state.editingTag = null
   state.mapFocus = null
-  state.mapZoom = 1
-  state.mapPanX = 0
-  state.mapPanY = 0
   state.view = 'map'
   setUrlUser(username)
   if (force) clearCache(username)

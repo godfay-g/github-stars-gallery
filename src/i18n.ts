@@ -59,6 +59,10 @@ export type Dict = {
   zoomOut: string
   zoomReset: string
   backToMap: string
+  mapTipExpand: string
+  mapTipOpen: string
+  mapTipBack: string
+  mapMore: string
   clearFilters: string
   forks: string
 }
@@ -117,11 +121,15 @@ const zh: Dict = {
   localeZh: '中文',
   localeEn: 'EN',
   apiRemaining: '接口余额',
-  starMapHint: '点分类展开该组仓库；滚轮缩放，拖动平移',
+  starMapHint: '点分类展开；拖动节点会弹回，滚轮/双指缩放，双击空白回到全景',
   zoomIn: '放大',
   zoomOut: '缩小',
-  zoomReset: '复位',
+  zoomReset: '回到全景',
   backToMap: '返回星图总览',
+  mapTipExpand: '点击展开这一类',
+  mapTipOpen: '点击在 GitHub 打开',
+  mapTipBack: '点击收起，回到全景',
+  mapMore: '还有 {n} 个，见下方列表',
   clearFilters: '清除筛选',
   forks: 'Fork',
 }
@@ -180,11 +188,15 @@ const en: Dict = {
   localeZh: '中文',
   localeEn: 'EN',
   apiRemaining: 'API left',
-  starMapHint: 'Click a category to expand; scroll to zoom, drag to pan',
+  starMapHint: 'Click a category to expand; drag nodes and they spring back; scroll/pinch to zoom; double-click empty space to fit',
   zoomIn: 'Zoom in',
   zoomOut: 'Zoom out',
-  zoomReset: 'Reset',
+  zoomReset: 'Fit all',
   backToMap: 'Back to full map',
+  mapTipExpand: 'Click to expand this category',
+  mapTipOpen: 'Click to open on GitHub',
+  mapTipBack: 'Click to collapse',
+  mapMore: '{n} more — see the list below',
   clearFilters: 'Clear filters',
   forks: 'Forks',
 }
