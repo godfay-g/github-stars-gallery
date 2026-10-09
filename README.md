@@ -20,7 +20,7 @@ Turn a GitHub user’s starred repositories into a searchable, filterable galler
 - Optional PAT in `localStorage` (never sent anywhere except GitHub API)
 - Progress + rate-limit hints; 15‑minute cache in `localStorage`
 - Search (name / description / owner / topics / local tags)
-- Filter by language & topic; exclude forks; sort by starred / stars / updated / name
+- Filter by language & topic; sort by starred / stars / updated / name
 - Card & list views; language distribution bar
 - Local custom tags (browser only)
 - Export filtered results as JSON or standalone searchable HTML
@@ -64,17 +64,33 @@ node scripts/export.mjs godfay-g
 
 The token is stored only in your browser `localStorage` under `gsg:pat`. This app does not phone home. Do not commit tokens.
 
-### GitHub Pages
+### Deploy (GitHub Pages)
 
-Live site is served from the `gh-pages` branch (built `dist/`).
+**Primary path:** GitHub Actions builds `dist/` on every push to `main` (and on manual dispatch) and deploys via the official Pages actions. Workflow: [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 
-Sample GitHub Actions workflow (needs a token with `workflow` scope to commit under `.github/workflows/`): see [`docs/pages.workflow.yml`](docs/pages.workflow.yml). Until then, refresh Pages with:
+Requirements once (repo Settings):
+
+1. **Actions → General → Workflow permissions** → **Read and write**
+2. **Pages → Build and deployment → Source** → **GitHub Actions**
+
+Then push to `main`, or run:
+
+```bash
+gh workflow run pages.yml
+```
+
+Site URL: https://godfay-g.github.io/github-stars-gallery/
+
+#### Appendix: legacy `gh-pages` branch
+
+Earlier demos used a `gh-pages` branch with a prebuilt `dist/`. Prefer Actions above. If you still need a manual static push:
 
 ```bash
 npm run build
-# publish dist/ to gh-pages (example)
-git subtree push --prefix dist origin gh-pages   # or any static deploy you prefer
+git subtree push --prefix dist origin gh-pages
 ```
+
+A copy of the workflow sample also lives at [`docs/pages.workflow.yml`](docs/pages.workflow.yml).
 
 ---
 
@@ -103,7 +119,41 @@ npm run build
 
 ### PAT 与隐私
 
-匿名约 60 次/小时；带 Token 约 5000 次/小时。最小权限：只读公开仓库即可。Token 只存在浏览器，不会发到第三方。
+| 模式 | 大约限流 |
+|------|----------|
+| 匿名 | 约 60 次 / 小时 / IP |
+| 已登录（PAT） | 约 5,000 次 / 小时 |
+
+**最小权限**
+
+- Classic：`public_repo`（或公开只读可不勾写权限）
+- Fine-grained：Repository permissions → Contents **Read-only**（公开仓库）；无需写权限
+
+Token 只存在浏览器 `localStorage`（键名 `gsg:pat`），不会发到第三方。请勿把 Token 提交进仓库。
+
+### 部署（GitHub Pages）
+
+**主路径：** 推送到 `main`（或手动 `workflow_dispatch`）后，Actions 构建 `dist/` 并部署。工作流：[`.github/workflows/pages.yml`](.github/workflows/pages.yml)。
+
+仓库设置一次性准备：
+
+1. **Actions → General → Workflow permissions** → **Read and write**
+2. **Pages → Build and deployment → Source** → **GitHub Actions**
+
+```bash
+gh workflow run pages.yml
+```
+
+演示地址：https://godfay-g.github.io/github-stars-gallery/
+
+#### 附录：旧版 `gh-pages` 分支
+
+早期演示用过 `gh-pages` 分支直接托管构建产物。请优先用上面的 Actions。如仍需手工推静态文件：
+
+```bash
+npm run build
+git subtree push --prefix dist origin gh-pages
+```
 
 ### License
 

@@ -1,5 +1,3 @@
-# Canonical copy: .github/workflows/pages.yml (this file is a reference sample).
-
 name: Deploy GitHub Pages
 
 on:
