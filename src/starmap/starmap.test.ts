@@ -59,3 +59,23 @@ describe('camera', () => {
     expect(cam.y).toBe(300)
   })
 })
+
+import { dragIntent, wheelIntent } from './gestures'
+
+describe('gestures', () => {
+  it('plain wheel scrolls the page; only ctrl/meta (or trackpad pinch) zooms', () => {
+    expect(wheelIntent({ ctrlKey: false, metaKey: false })).toBe('scroll')
+    expect(wheelIntent({ ctrlKey: true, metaKey: false })).toBe('zoom')
+    expect(wheelIntent({ ctrlKey: false, metaKey: true })).toBe('zoom')
+  })
+  it('one finger never pans the map; two fingers pinch/pan', () => {
+    expect(dragIntent('touch', 1, false)).toBe('none')
+    expect(dragIntent('touch', 1, true)).toBe('none')
+    expect(dragIntent('touch', 2, false)).toBe('pinch')
+  })
+  it('mouse drags pan, or move a node', () => {
+    expect(dragIntent('mouse', 1, false)).toBe('pan')
+    expect(dragIntent('mouse', 1, true)).toBe('node')
+    expect(dragIntent('pen', 1, true)).toBe('node')
+  })
+})

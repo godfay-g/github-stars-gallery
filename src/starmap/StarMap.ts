@@ -7,7 +7,8 @@
  * - Physics: d3-force (forceX/forceY towards "home", collide, many-body). We drive ticks
  *   ourselves from a single rAF loop, and per frame only write `transform` / `opacity`
  *   attributes on persistent SVG elements.
- * - Camera: own pan/zoom with cursor-centric wheel zoom, pinch, inertia (no CSS transitions).
+ * - Camera: own pan/zoom; Ctrl/⌘+wheel or trackpad pinch zooms at the cursor, plain wheel scrolls the page;
+ *   touch: one finger scrolls the page (touch-action: pan-y), two fingers pan/zoom. Inertia, no CSS transitions.
  */
 import { forceCollide, forceManyBody, forceSimulation, forceX, forceY, type Simulation, type SimulationNodeDatum } from 'd3-force'
 import type { StarredRepo } from '../types'
@@ -15,6 +16,7 @@ import { categorizeRepo, CATEGORIES, humanBlurb, type CategoryId } from '../lib/
 import { formatStars, languageColor, type Locale } from '../lib/format'
 import { avatarUrl, escapeHtml } from '../lib/html'
 import { boundsOf, capList, catRadius, exceedsThreshold, LOD_ZOOM, phyllotaxis, ringPositions, type Vec } from './layout'
+import { dragIntent, wheelIntent } from './gestures'
 import { clampK, decay, fitBounds, smoothing, toWorld, zoomAt, type Cam } from './camera'
 import './starmap.css'
 
@@ -891,26 +893,23 @@ export class StarMap {
     svg.addEventListener(
       'wheel',
       (e) => {
+        // Plain wheel / two-finger trackpad scroll belongs to the page — don't preventDefault.
+        if (wheelIntent(e) === 'scroll') return
+        // Ctrl/⌘ + wheel, or trackpad pinch (reported as wheel + ctrlKey): cursor-centred zoom.
         e.preventDefault()
         const p = this.local(e)
         this.userMoved = true
         this.camGoal = null
         this.inertia = null
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
-        const dx = e.deltaX * unit
         const dy = e.deltaY * unit
-        // Trackpad two-finger scroll (has horizontal component, no ctrl) => pan; pinch (ctrl) or mouse wheel => zoom
-        if (!e.ctrlKey && Math.abs(dx) > 0.5 && e.deltaMode === 0) {
+        // pinch deltas are small and fine-grained; mouse wheel notches are ~100px
+        const rate = Math.abs(dy) < 50 ? 0.012 : 0.0025
+        const base = this.zoomGoal?.k ?? this.cam.k
+        this.zoomGoal = { k: clampK(base * Math.exp(-dy * rate)), anchor: p }
+        if (this.reduced) {
+          this.cam = zoomAt(this.cam, p, this.zoomGoal.k)
           this.zoomGoal = null
-          this.cam = { ...this.cam, x: this.cam.x - dx, y: this.cam.y - dy }
-        } else {
-          const base = this.zoomGoal?.k ?? this.cam.k
-          const factor = Math.exp(-dy * (e.ctrlKey ? 0.012 : 0.0018))
-          this.zoomGoal = { k: clampK(base * factor), anchor: p }
-          if (this.reduced) {
-            this.cam = zoomAt(this.cam, p, this.zoomGoal.k)
-            this.zoomGoal = null
-          }
         }
         this.kick()
       },
@@ -956,6 +955,7 @@ export class StarMap {
         return
       }
       this.pointers.set(e.pointerId, p)
+      if (this.mode === 'done') return
       if (this.mode === 'pinch' && this.pinch && this.pointers.size >= 2) {
         const [a, b] = [...this.pointers.values()]
         const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1
@@ -967,7 +967,14 @@ export class StarMap {
         return
       }
       if (this.mode === 'pending' && exceedsThreshold(p.x - this.downAt.x, p.y - this.downAt.y)) {
-        this.mode = this.downNode ? 'node' : 'pan'
+        const intent = dragIntent(e.pointerType, this.pointers.size, !!this.downNode)
+        if (intent === 'none') {
+          // one finger on touch: the page scrolls (touch-action: pan-y); this is no longer a tap
+          this.mode = 'done'
+          this.downNode = null
+          return
+        }
+        this.mode = intent === 'node' ? 'node' : 'pan'
         svg.classList.add('is-dragging')
         if (this.mode === 'pan') {
           this.userMoved = true

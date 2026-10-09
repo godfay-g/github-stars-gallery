@@ -22,7 +22,7 @@
   - 物理布局：d3-force 驱动，节点轻微呼吸漂浮；可以拖动节点，松手后带惯性弹回原位。
   - 飞散展开：点分类，仓库从分类节点飞散展开，其他分类退到外圈淡出；返回时反向收拢。
   - 悬停简介：高亮节点和连线、其余淡化，浮出头像 + 仓库名 + 一句话 + Star 数。
-  - 缩放平移：以鼠标位置为中心缩放；触控板双指平移/捏合；触屏双指捏合；拖动平移带惯性；双击空白或 ⤢ 回到全景。
+  - 缩放平移：按住 Ctrl/⌘ 滚动（或触控板捏合）以鼠标位置为中心缩放，普通滚轮照常滚动页面；鼠标拖动平移带惯性；手机上单指照常滚页面，双指平移/捏合缩放；双击空白或 ⤢ 回到全景。
   - 大账号友好：每个分类最多展开约 150 个节点，其余折叠成「+N」（点它跳到下方列表）；缩小到 0.6 倍以下时头像换成色点。
   - 尊重系统「减少动态效果」（`prefers-reduced-motion`）：关闭漂浮和惯性，切换即时完成。
 - **卡片 / 列表视图与芯片筛选**：搜索（名称、简介、作者、topics、本地标签），按分类 / 语言 / topics 多选芯片筛选，按收藏时间 / Star / 更新时间 / 名称排序；筛选时星图节点平滑进出，页面不闪。
@@ -122,7 +122,7 @@ A static web app that turns any GitHub user's stars into an auto-categorized, an
   - Physics layout with d3-force; nodes gently breathe; drag a node and it springs back with inertia.
   - Burst expand: click a category and its repos fly out of it while other categories retreat and fade; back reverses it.
   - Hover: highlights the node and its links, dims the rest, and floats a card with avatar, name, one-liner and stars.
-  - Cursor-centred zoom, trackpad pan/pinch, touch pinch, inertial panning; double-click empty space or ⤢ to fit.
+  - Hold Ctrl/⌘ and scroll (or pinch on a trackpad) for cursor-centred zoom; a plain wheel still scrolls the page. Mouse drag pans with inertia. On phones one finger scrolls the page and two fingers pan/pinch. Double-click empty space or ⤢ to fit.
   - Scales to big accounts: up to ~150 repo nodes per category, the rest fold into a "+N" node; below 0.6× zoom avatars become colour dots.
   - Honours `prefers-reduced-motion`: no floating or inertia, instant transitions.
 - **Cards / list + chip filters**: search (name, description, owner, topics, local tags), multi-select category / language / topic chips, sort by starred / stars / updated / name. The map updates smoothly, without page flicker.
