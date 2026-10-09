@@ -1,0 +1,111 @@
+/* Fluid star map. Per-frame motion is written as SVG transform/opacity attributes from JS;
+   CSS only handles hover affordances (transform/opacity) — no transitions on the stage. */
+.sm-wrap {
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: var(--shadow);
+  padding: 0.85rem;
+  margin-bottom: 0.6rem;
+}
+.sm-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.45rem;
+}
+.sm-hint { margin: 0; font-size: 0.85rem; }
+.sm-actions { display: flex; gap: 0.35rem; }
+.sm-back {
+  opacity: 0;
+  transform: translateX(8px);
+  pointer-events: none;
+  transition: opacity 0.25s var(--ease), transform 0.35s var(--ease);
+}
+.sm-back.show { opacity: 1; transform: none; pointer-events: auto; }
+.sm-viewport {
+  position: relative;
+  height: min(66vh, 600px);
+  overflow: hidden;
+  border-radius: 16px;
+  /* isolate the map: page changes below (cards streaming in) must not relayout the SVG */
+  contain: strict;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(88, 166, 255, 0.09), transparent 58%),
+    radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.35), transparent 60%),
+    radial-gradient(1px 1px at 70% 80%, rgba(255,255,255,0.25), transparent 60%),
+    radial-gradient(1px 1px at 85% 20%, rgba(255,255,255,0.3), transparent 60%),
+    #0a0e13;
+}
+.sm-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* one finger scrolls the page vertically; two-finger pan/pinch is handled in JS */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+.sm-svg.is-dragging { cursor: grabbing; }
+.sm-node { cursor: pointer; }
+.sm-center { cursor: default; }
+.sm-inner {
+  transition: transform 0.38s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.22s ease;
+  will-change: transform, opacity;
+}
+.sm-node.is-hover .sm-inner { transform: scale(1.14); }
+.sm-svg.has-hover .sm-node:not(.is-hot) .sm-inner { opacity: 0.16; }
+.sm-svg.has-hover .sm-link:not(.is-hot) { stroke-opacity: 0.25; }
+.sm-link { stroke-width: 1.3; stroke-linecap: round; transition: stroke-opacity 0.22s ease; }
+.sm-link.is-hot { stroke-width: 2.2; }
+.sm-halo { opacity: 0.2; transition: opacity 0.25s ease; }
+.sm-node.is-hover .sm-halo { opacity: 0.38; }
+.sm-label { fill: #d7dee8; font-size: 11px; font-family: var(--font); pointer-events: none; }
+.sm-count { fill: #fff; font-size: 14px; font-weight: 700; font-family: var(--font); pointer-events: none; }
+.sm-title { fill: #eef3f9; font-size: 12px; font-weight: 700; font-family: var(--font); }
+.sm-dot { opacity: 0; transition: opacity 0.2s ease; }
+.sm-avatar, .sm-repo .sm-label { transition: opacity 0.2s ease; }
+.lod-dots .sm-dot { opacity: 1; }
+.lod-dots .sm-avatar, .lod-dots .sm-repo .sm-label { opacity: 0; }
+.sm-more .sm-count { font-size: 12px; fill: var(--muted); }
+
+.sm-tip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 280px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  z-index: 2;
+}
+.sm-tip.show { opacity: 1; }
+.sm-tip-card {
+  background: rgba(20, 26, 34, 0.92);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.7rem 0.8rem;
+  box-shadow: var(--shadow);
+  transform: translateY(6px) scale(0.96);
+  transform-origin: 0 50%;
+  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.25);
+  font-size: 0.85rem;
+}
+.sm-tip.show .sm-tip-card { transform: none; }
+.sm-tip-head { display: flex; align-items: center; gap: 0.55rem; }
+.sm-tip-head img { border-radius: 50%; }
+.sm-tip-head strong { font-size: 0.95rem; }
+.sm-tip-owner { color: var(--muted); font-size: 0.75rem; line-height: 1.1; }
+.sm-tip-star { margin-left: auto; color: var(--star); font-weight: 700; white-space: nowrap; }
+.sm-tip-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.sm-tip-card p { margin: 0.45rem 0 0; color: #c9d3df; line-height: 1.45; }
+.sm-tip-foot { margin-top: 0.45rem; color: var(--accent); font-size: 0.75rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sm-inner, .sm-tip, .sm-tip-card, .sm-back, .sm-link, .sm-dot, .sm-avatar, .sm-halo { transition: none; }
+  .sm-node.is-hover .sm-inner { transform: none; }
+}
