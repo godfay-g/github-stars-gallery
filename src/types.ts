@@ -16,18 +16,17 @@ export type StarredRepo = {
 }
 
 export type SortKey = 'starred_at' | 'stars' | 'updated' | 'name'
-export type ViewMode = 'card' | 'list'
+export type ViewMode = 'map' | 'card' | 'list'
 
 export type Filters = {
   query: string
-  /** empty = all */
   languages: string[]
-  /** empty = all */
   topics: string[]
+  categories: string[]
   excludeForks: boolean
 }
 
-export type LocalTagMap = Record<string, string[]> // full_name -> tags
+export type LocalTagMap = Record<string, string[]>
 
 export type CachePayload = {
   fetchedAt: number

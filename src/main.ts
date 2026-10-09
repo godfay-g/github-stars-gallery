@@ -3,10 +3,17 @@ import type { Filters, LocalTagMap, SortKey, StarredRepo, ViewMode } from './typ
 import { fetchAllStarred, GithubApiError, loadToken, saveToken } from './api/github'
 import { clearCache } from './api/cache'
 import { loadTags, setRepoTags } from './state/tags'
-import { allLanguages, allTopics, applyFilters, languageStats, sortRepos } from './lib/filter'
+import { allLanguages, applyFilters, languageStats, sortRepos } from './lib/filter'
 import { exportHtml, exportJson } from './lib/export'
-
-const LANG_COLORS = 8
+import {
+  buildCategoryBuckets,
+  categorizeRepo,
+  categoryColor,
+  humanBlurb,
+  type CategoryId,
+} from './lib/categories'
+import { formatRelative, formatStars, languageColor, type Locale } from './lib/format'
+import { loadLocale, saveLocale, t, type Dict } from './i18n'
 
 type State = {
   username: string
@@ -21,14 +28,21 @@ type State = {
   limit: number | null
   error: string | null
   token: string
+  locale: Locale
+  editingTag: string | null
+  mapZoom: number
+  mapPanX: number
+  mapPanY: number
+  mapFocus: CategoryId | null
+  advancedOpen: boolean
 }
 
 const state: State = {
   username: '',
   repos: [],
-  filters: { query: '', languages: [], topics: [], excludeForks: false },
+  filters: { query: '', languages: [], topics: [], categories: [], excludeForks: false },
   sort: 'starred_at',
-  view: 'card',
+  view: 'map',
   tags: loadTags(),
   loading: false,
   progress: '',
@@ -36,15 +50,26 @@ const state: State = {
   limit: null,
   error: null,
   token: loadToken(),
+  locale: loadLocale(),
+  editingTag: null,
+  mapZoom: 1,
+  mapPanX: 0,
+  mapPanY: 0,
+  mapFocus: null,
+  advancedOpen: false,
 }
 
 let abort: AbortController | null = null
 let shellBound = false
+let mapGesturesBound = false
 const root = document.querySelector<HTMLDivElement>('#app')!
 
+function d(): Dict {
+  return t(state.locale)
+}
+
 function qsUser(): string {
-  const u = new URLSearchParams(location.search).get('user')
-  return u?.trim() ?? ''
+  return new URLSearchParams(location.search).get('user')?.trim() ?? ''
 }
 
 function setUrlUser(username: string): void {
@@ -52,22 +77,6 @@ function setUrlUser(username: string): void {
   if (username) url.searchParams.set('user', username)
   else url.searchParams.delete('user')
   history.replaceState(null, '', url)
-}
-
-function fmtDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    })
-  } catch {
-    return iso.slice(0, 10)
-  }
-}
-
-function fmtNum(n: number): string {
-  return n.toLocaleString()
 }
 
 function escapeHtml(s: string): string {
@@ -78,205 +87,453 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
+function avatarUrl(login: string): string {
+  return `https://github.com/${encodeURIComponent(login || 'ghost')}.png?size=96`
+}
+
 function visibleRepos(): StarredRepo[] {
   return sortRepos(applyFilters(state.repos, state.filters, state.tags), state.sort)
 }
 
-function multiLabel(kind: 'languages' | 'topics'): string {
-  const selected = state.filters[kind]
-  if (!selected.length) return kind === 'languages' ? 'All languages' : 'All topics'
-  if (selected.length === 1) return selected[0]
-  return `${selected.length} selected`
+function topicCounts(repos: StarredRepo[]): { topic: string; count: number }[] {
+  const map = new Map<string, number>()
+  for (const r of repos) for (const topic of r.topics) map.set(topic, (map.get(topic) ?? 0) + 1)
+  return [...map.entries()]
+    .map(([topic, count]) => ({ topic, count }))
+    .sort((a, b) => b.count - a.count)
 }
 
-function renderMulti(kind: 'languages' | 'topics', options: string[]): string {
-  const selected = new Set(state.filters[kind])
-  const disabled = !state.repos.length
-  return `
-  <details class="multi" data-multi="${kind}" ${disabled ? 'aria-disabled="true"' : ''}>
-    <summary class="btn multi-summary" ${disabled ? 'tabindex="-1"' : ''}>${escapeHtml(multiLabel(kind))}</summary>
-    <div class="multi-panel" role="group">
-      ${
-        options.length
-          ? options
-              .map(
-                (o) => `
-        <label class="multi-option">
-          <input type="checkbox" data-multi-kind="${kind}" value="${escapeHtml(o)}" ${selected.has(o) ? 'checked' : ''} ${disabled ? 'disabled' : ''}/>
-          <span>${escapeHtml(o)}</span>
-        </label>`,
-              )
-              .join('')
-          : `<p class="multi-empty">No ${kind} yet</p>`
-      }
-      <div class="multi-actions">
-        <button type="button" class="btn btn-ghost" data-multi-clear="${kind}" ${disabled || !selected.size ? 'disabled' : ''}>Clear</button>
-      </div>
-    </div>
-  </details>`
+function toggleIn(list: string[], value: string): string[] {
+  return list.includes(value) ? list.filter((x) => x !== value) : [...list, value]
+}
+
+function hasActiveFilters(): boolean {
+  const f = state.filters
+  return Boolean(f.query.trim() || f.languages.length || f.topics.length || f.categories.length || f.excludeForks)
+}
+
+function clearFilters(): void {
+  state.filters = { query: '', languages: [], topics: [], categories: [], excludeForks: false }
+  state.mapFocus = null
+  const search = document.getElementById('search') as HTMLInputElement | null
+  if (search) search.value = ''
 }
 
 function renderHeader(): string {
+  const dict = d()
   return `
   <header class="app-header">
-    <div class="brand"><span class="star">★</span> GitHub Stars Gallery</div>
+    <div class="brand">
+      <span class="star" aria-hidden="true">★</span>
+      <div>
+        <div class="brand-title">${escapeHtml(dict.brand)}</div>
+        <div class="brand-sub">${escapeHtml(dict.tagline)}</div>
+      </div>
+    </div>
     <form class="user-form" id="user-form">
-      <input type="text" id="username" name="username" placeholder="GitHub username" value="${escapeHtml(state.username)}" autocomplete="username" required />
-      <button class="btn btn-primary" type="submit" ${state.loading ? 'disabled' : ''}>${state.loading ? 'Loading…' : 'Load'}</button>
-      <button class="btn" type="button" id="btn-refresh" title="Force refresh" ${state.loading || !state.username ? 'disabled' : ''}>↻</button>
+      <input type="text" id="username" name="username" placeholder="${escapeHtml(dict.usernamePlaceholder)}" value="${escapeHtml(state.username)}" autocomplete="username" required />
+      <button class="btn btn-primary" type="submit" ${state.loading ? 'disabled' : ''}>${state.loading ? escapeHtml(dict.loading) : escapeHtml(dict.load)}</button>
+      <button class="btn" type="button" id="btn-refresh" title="${escapeHtml(dict.refresh)}" ${state.loading || !state.username ? 'disabled' : ''}>↻</button>
     </form>
-    <button class="btn btn-ghost" type="button" id="btn-token" title="Optional PAT">${state.token ? '🔑 PAT ✓' : '🔑 PAT'}</button>
+    <div class="locale-switch" role="group" aria-label="Language">
+      <button type="button" class="btn btn-ghost ${state.locale === 'zh' ? 'active' : ''}" data-locale="zh">${escapeHtml(dict.localeZh)}</button>
+      <button type="button" class="btn btn-ghost ${state.locale === 'en' ? 'active' : ''}" data-locale="en">${escapeHtml(dict.localeEn)}</button>
+    </div>
   </header>`
 }
 
-function renderToolbar(): string {
-  const langs = allLanguages(state.repos)
-  const topics = allTopics(state.repos)
-  const has = state.repos.length > 0
+function renderChipRow(
+  kind: 'languages' | 'topics' | 'categories',
+  items: { label: string; value: string; color?: string }[],
+  allLabel: string,
+): string {
+  const selected = new Set(state.filters[kind])
+  const disabled = !state.repos.length
   return `
-  <div class="toolbar" id="toolbar">
-    <input type="search" id="search" placeholder="Search name, description, owner, topics, local tags…" value="${escapeHtml(state.filters.query)}" ${has ? '' : 'disabled'} />
-    ${renderMulti('languages', langs)}
-    ${renderMulti('topics', topics)}
-    <select id="sort" ${has ? '' : 'disabled'}>
-      <option value="starred_at" ${state.sort === 'starred_at' ? 'selected' : ''}>Recently starred</option>
-      <option value="stars" ${state.sort === 'stars' ? 'selected' : ''}>Most stars</option>
-      <option value="updated" ${state.sort === 'updated' ? 'selected' : ''}>Recently updated</option>
-      <option value="name" ${state.sort === 'name' ? 'selected' : ''}>Name A–Z</option>
-    </select>
-    <label class="meta-row"><input type="checkbox" id="exclude-forks" ${state.filters.excludeForks ? 'checked' : ''} ${has ? '' : 'disabled'}/> Exclude forks</label>
-    <div class="btn-group" style="display:flex;gap:.35rem">
-      <button type="button" class="btn ${state.view === 'card' ? 'active' : ''}" id="view-card" ${has ? '' : 'disabled'}>Cards</button>
-      <button type="button" class="btn ${state.view === 'list' ? 'active' : ''}" id="view-list" ${has ? '' : 'disabled'}>List</button>
+  <div class="chip-row fade-in" data-chip-kind="${kind}">
+    <button type="button" class="chip-filter ${selected.size === 0 ? 'active' : ''}" data-chip-all="${kind}" ${disabled ? 'disabled' : ''}>${escapeHtml(allLabel)}</button>
+    ${items
+      .map(
+        (it) => `
+      <button type="button" class="chip-filter ${selected.has(it.value) ? 'active' : ''}" data-chip-kind="${kind}" data-chip-value="${escapeHtml(it.value)}" ${disabled ? 'disabled' : ''}>
+        ${it.color ? `<i class="lang-dot" style="background:${it.color}"></i>` : ''}
+        ${escapeHtml(it.label)}
+      </button>`,
+      )
+      .join('')}
+  </div>`
+}
+
+function renderToolbar(): string {
+  const dict = d()
+  const has = state.repos.length > 0
+  const buckets = buildCategoryBuckets(state.repos, state.locale)
+  const langs = allLanguages(state.repos)
+    .slice(0, 12)
+    .map((l) => ({ label: l, value: l, color: languageColor(l) }))
+  const topics = topicCounts(state.repos)
+    .slice(0, 12)
+    .map((x) => ({ label: `${x.topic}`, value: x.topic }))
+  const cats = buckets.map((b) => ({
+    label: `${b.label} ${b.repos.length}`,
+    value: b.id,
+    color: b.color,
+  }))
+
+  return `
+  <div class="toolbar gallery-toolbar" id="toolbar">
+    <div class="toolbar-top">
+      <input type="search" id="search" class="search-hero" placeholder="${escapeHtml(dict.searchPlaceholder)}" value="${escapeHtml(state.filters.query)}" ${has ? '' : 'disabled'} />
+      <select id="sort" ${has ? '' : 'disabled'}>
+        <option value="starred_at" ${state.sort === 'starred_at' ? 'selected' : ''}>${escapeHtml(dict.sortStarred)}</option>
+        <option value="stars" ${state.sort === 'stars' ? 'selected' : ''}>${escapeHtml(dict.sortStars)}</option>
+        <option value="updated" ${state.sort === 'updated' ? 'selected' : ''}>${escapeHtml(dict.sortUpdated)}</option>
+        <option value="name" ${state.sort === 'name' ? 'selected' : ''}>${escapeHtml(dict.sortName)}</option>
+      </select>
+      <div class="view-toggle btn-group">
+        <button type="button" class="btn ${state.view === 'map' ? 'active' : ''}" id="view-map" ${has ? '' : 'disabled'}>${escapeHtml(dict.map)}</button>
+        <button type="button" class="btn ${state.view === 'card' ? 'active' : ''}" id="view-card" ${has ? '' : 'disabled'}>${escapeHtml(dict.cards)}</button>
+        <button type="button" class="btn ${state.view === 'list' ? 'active' : ''}" id="view-list" ${has ? '' : 'disabled'}>${escapeHtml(dict.list)}</button>
+      </div>
+      ${hasActiveFilters() ? `<button type="button" class="btn" id="btn-clear-filters">${escapeHtml(dict.clearFilters)}</button>` : ''}
     </div>
-    <div class="spacer"></div>
-    <button type="button" class="btn" id="export-json" ${has ? '' : 'disabled'}>Export JSON</button>
-    <button type="button" class="btn" id="export-html" ${has ? '' : 'disabled'}>Export HTML</button>
+    ${has ? `<div class="filter-block"><div class="filter-label">${escapeHtml(dict.categories)}</div>${renderChipRow('categories', cats, dict.allCategories)}</div>` : ''}
+    ${has ? `<div class="filter-block"><div class="filter-label">${escapeHtml(dict.allLanguages)}</div>${renderChipRow('languages', langs, dict.allLanguages)}</div>` : ''}
+    ${has ? `<div class="filter-block"><div class="filter-label">${escapeHtml(dict.allTopics)}</div>${renderChipRow('topics', topics, dict.allTopics)}</div>` : ''}
   </div>`
 }
 
 function renderStatus(): string {
+  const dict = d()
   const parts: string[] = []
   if (state.loading) {
-    parts.push(`<div class="progress"><i></i></div><span>${escapeHtml(state.progress || 'Fetching…')}</span>`)
+    parts.push(`<div class="progress"><i></i></div><span>${escapeHtml(state.progress || dict.fetching)}</span>`)
   } else if (state.repos.length) {
     const v = visibleRepos().length
-    parts.push(`<span class="ok">${fmtNum(v)} shown · ${fmtNum(state.repos.length)} starred</span>`)
-  }
-  if (state.remaining != null && state.limit != null) {
-    parts.push(`<span>API remaining: ${state.remaining}/${state.limit}</span>`)
+    parts.push(
+      `<span class="ok">${escapeHtml(dict.shown)} <strong>${v.toLocaleString()}</strong> · ${escapeHtml(dict.starred)} ${state.repos.length.toLocaleString()}</span>`,
+    )
   }
   if (state.error) parts.push(`<span class="error">${escapeHtml(state.error)}</span>`)
-  return `<div class="status-bar" id="status-bar">${parts.join('') || '<span>Enter a GitHub username to load starred repos.</span>'}</div>`
+  return `<div class="status-bar" id="status-bar">${parts.join('') || `<span>${escapeHtml(dict.enterUser)}</span>`}</div>`
 }
 
-function renderStats(): string {
+function renderOverview(): string {
+  const dict = d()
   if (!state.repos.length) return '<div id="stats-root"></div>'
-  const stats = languageStats(
-    applyFilters(state.repos, { ...state.filters, languages: [] }, state.tags),
-  )
-  const total = stats.reduce((s, x) => s + x.count, 0) || 1
-  const top = stats.slice(0, 8)
-  const other = stats.slice(8).reduce((s, x) => s + x.count, 0)
-  const segs = [...top]
-  if (other) segs.push({ language: 'Other', count: other })
+  const stats = languageStats(state.repos)
+  const total = state.repos.length
+  const top = stats.slice(0, 6)
+  const topSum = top.reduce((s, x) => s + x.count, 0) || 1
+  const recent = [...state.repos].sort((a, b) => b.starred_at.localeCompare(a.starred_at)).slice(0, 5)
+  const buckets = buildCategoryBuckets(state.repos, state.locale)
+
   return `
-  <section class="stats" id="stats-root">
-    <div class="stats-bar">
-      ${segs
-        .map(
-          (s, i) =>
-            `<div class="stats-seg lang-palette-${i % LANG_COLORS}" style="width:${(s.count / total) * 100}%" title="${escapeHtml(s.language)}: ${s.count}"></div>`,
-        )
-        .join('')}
+  <section class="overview fade-in" id="stats-root">
+    <div class="overview-head">
+      <h2>${escapeHtml(dict.overview)}</h2>
+      <div class="overview-total"><span class="num">${formatStars(total, state.locale)}</span><span class="lbl">${escapeHtml(dict.total)}</span></div>
     </div>
-    <div class="stats-legend">
-      ${segs
-        .map(
-          (s, i) =>
-            `<span><i class="dot lang-palette-${i % LANG_COLORS}"></i>${escapeHtml(s.language)} ${s.count}</span>`,
-        )
-        .join('')}
+    <div class="overview-grid">
+      <div class="overview-card">
+        <h3>${escapeHtml(dict.categories)}</h3>
+        <div class="cat-pills">
+          ${buckets
+            .map(
+              (b) => `<button type="button" class="cat-pill ${state.filters.categories.includes(b.id) ? 'active' : ''}" data-chip-kind="categories" data-chip-value="${b.id}" style="--c:${b.color}">
+                <span class="cat-count">${b.repos.length}</span>${escapeHtml(b.label)}
+              </button>`,
+            )
+            .join('')}
+        </div>
+      </div>
+      <div class="overview-card">
+        <h3>${escapeHtml(dict.topLanguages)}</h3>
+        <div class="lang-bars">
+          ${top
+            .map((s) => {
+              const pct = Math.round((s.count / topSum) * 100)
+              return `<div class="lang-bar-row">
+                <span class="lang-bar-label"><i class="lang-dot" style="background:${languageColor(s.language)}"></i>${escapeHtml(s.language)}</span>
+                <div class="lang-bar-track"><div class="lang-bar-fill" style="width:${pct}%;background:${languageColor(s.language)}"></div></div>
+                <span class="lang-bar-count">${s.count}</span>
+              </div>`
+            })
+            .join('')}
+        </div>
+      </div>
+      <div class="overview-card">
+        <h3>${escapeHtml(dict.recentStars)}</h3>
+        <ul class="timeline">
+          ${recent
+            .map(
+              (r) => `<li>
+              <img class="avatar sm" src="${avatarUrl(r.owner_login)}" alt="" loading="lazy" width="28" height="28"/>
+              <div>
+                <a href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">${escapeHtml(r.full_name)}</a>
+                <div class="muted">${escapeHtml(formatRelative(r.starred_at, state.locale))}</div>
+              </div>
+            </li>`,
+            )
+            .join('')}
+        </ul>
+      </div>
     </div>
   </section>`
 }
 
-function renderCard(r: StarredRepo): string {
-  const local = state.tags[r.full_name] ?? []
+function renderStarMap(): string {
+  const dict = d()
+  const source = applyFilters(
+    state.repos,
+    { ...state.filters, categories: state.mapFocus ? [state.mapFocus] : state.filters.categories },
+    state.tags,
+  )
+  const buckets = buildCategoryBuckets(
+    state.mapFocus ? state.repos.filter((r) => categorizeRepo(r) === state.mapFocus) : applyFilters(state.repos, { ...state.filters, categories: [] }, state.tags),
+    state.locale,
+  )
+  const cx = 400
+  const cy = 300
+  const radius = 210
+  const focus = state.mapFocus
+  const focusBucket = focus ? buckets.find((b) => b.id === focus) : null
+
+  let nodes = ''
+  let links = ''
+
+  if (focus && focusBucket) {
+    const repos = sortRepos(focusBucket.repos, state.sort).slice(0, 18)
+    const n = Math.max(repos.length, 1)
+    repos.forEach((r, i) => {
+      const angle = (Math.PI * 2 * i) / n - Math.PI / 2
+      const x = cx + Math.cos(angle) * (radius - 20)
+      const y = cy + Math.sin(angle) * (radius - 20)
+      links += `<line class="map-link" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${focusBucket.color}" />`
+      nodes += `
+        <g class="map-node repo-node" transform="translate(${x},${y})" data-open-url="${escapeHtml(r.html_url)}">
+          <circle r="22" fill="#161b22" stroke="${focusBucket.color}" stroke-width="2"/>
+          <image href="${avatarUrl(r.owner_login)}" x="-14" y="-14" width="28" height="28" clip-path="circle(14px at 14px 14px)"/>
+          <title>${escapeHtml(r.full_name)} — ${escapeHtml(humanBlurb(r, state.locale))}</title>
+          <text y="36" text-anchor="middle" class="map-label">${escapeHtml((r.full_name.split('/')[1] ?? r.full_name).slice(0, 14))}</text>
+        </g>`
+    })
+    nodes += `
+      <g class="map-node center-node" transform="translate(${cx},${cy})" data-map-back="1">
+        <circle r="46" fill="${focusBucket.color}" opacity="0.2"/>
+        <circle r="34" fill="#0d1117" stroke="${focusBucket.color}" stroke-width="3"/>
+        <text y="-4" text-anchor="middle" class="map-center-title">${escapeHtml(focusBucket.label)}</text>
+        <text y="14" text-anchor="middle" class="map-center-sub">${focusBucket.repos.length}</text>
+      </g>`
+  } else {
+    const n = Math.max(buckets.length, 1)
+    buckets.forEach((b, i) => {
+      const angle = (Math.PI * 2 * i) / n - Math.PI / 2
+      const x = cx + Math.cos(angle) * radius
+      const y = cy + Math.sin(angle) * radius
+      const size = 28 + Math.min(22, b.repos.length)
+      links += `<line class="map-link" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="${b.color}" />`
+      nodes += `
+        <g class="map-node cat-node" transform="translate(${x},${y})" data-map-cat="${b.id}">
+          <circle r="${size}" fill="${b.color}" opacity="0.22"/>
+          <circle r="${size - 10}" fill="#121820" stroke="${b.color}" stroke-width="2.5"/>
+          <text y="-2" text-anchor="middle" class="map-cat-count">${b.repos.length}</text>
+          <text y="16" text-anchor="middle" class="map-label">${escapeHtml(b.label.split(' / ')[0])}</text>
+          <title>${escapeHtml(b.label)} · ${b.repos.length}</title>
+        </g>`
+    })
+    const label = state.username || 'You'
+    nodes += `
+      <g class="map-node center-node" transform="translate(${cx},${cy})">
+        <circle r="52" fill="url(#centerGlow)"/>
+        <circle r="38" fill="#0d1117" stroke="#f0c14b" stroke-width="3"/>
+        <image href="${avatarUrl(state.username)}" x="-22" y="-22" width="44" height="44" clip-path="circle(22px at 22px 22px)"/>
+        <text y="58" text-anchor="middle" class="map-center-title">@${escapeHtml(label)}</text>
+      </g>`
+  }
+
   return `
-  <article class="card" data-id="${r.id}">
-    <h3><a href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">${escapeHtml(r.full_name)}</a>
-      ${r.archived ? '<span class="badge">archived</span>' : ''}
-      ${r.fork ? '<span class="badge">fork</span>' : ''}
-    </h3>
-    <p class="desc">${escapeHtml(r.description || 'No description')}</p>
-    <div class="meta-row">
-      <span class="chip lang">${escapeHtml(r.language || '—')}</span>
-      <span>★ ${fmtNum(r.stargazers_count)}</span>
-      <span>Starred ${fmtDate(r.starred_at)}</span>
-      <span>Updated ${fmtDate(r.updated_at)}</span>
+  <div class="star-map-wrap fade-in" id="star-map-root">
+    <div class="star-map-toolbar">
+      <p class="muted">${escapeHtml(dict.starMapHint)}</p>
+      <div class="star-map-actions">
+        ${focus ? `<button type="button" class="btn" id="btn-map-back">${escapeHtml(dict.backToMap)}</button>` : ''}
+        <button type="button" class="btn" data-zoom="in" title="${escapeHtml(dict.zoomIn)}">＋</button>
+        <button type="button" class="btn" data-zoom="out" title="${escapeHtml(dict.zoomOut)}">－</button>
+        <button type="button" class="btn" data-zoom="reset" title="${escapeHtml(dict.zoomReset)}">⟲</button>
+      </div>
     </div>
-    <div class="topics">${r.topics
-      .slice(0, 8)
-      .map((t) => `<span class="chip">${escapeHtml(t)}</span>`)
-      .join('')}</div>
-    <div class="local-tags">${local.map((t) => `<span class="chip">${escapeHtml(t)}</span>`).join('')}</div>
-    <div class="tag-edit">
-      <input type="text" data-tag-input="${escapeHtml(r.full_name)}" placeholder="Local tags (comma-separated)" value="${escapeHtml(local.join(', '))}" />
-      <button type="button" class="btn" data-tag-save="${escapeHtml(r.full_name)}">Save</button>
+    <div class="star-map-viewport" id="star-map-viewport">
+      <svg class="star-map" viewBox="0 0 800 600" role="img" aria-label="${escapeHtml(dict.map)}">
+        <defs>
+          <radialGradient id="centerGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#f0c14b" stop-opacity="0.45"/>
+            <stop offset="100%" stop-color="#f0c14b" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <g class="star-map-stage" id="star-map-stage" style="transform:translate(${state.mapPanX}px,${state.mapPanY}px) scale(${state.mapZoom}); transform-origin:400px 300px;">
+          ${links}
+          ${nodes}
+        </g>
+      </svg>
     </div>
+    <p class="muted map-foot">${escapeHtml(dict.shown)} ${source.length} / ${state.repos.length}</p>
+  </div>`
+}
+
+function renderCard(r: StarredRepo): string {
+  const dict = d()
+  const local = state.tags[r.full_name] ?? []
+  const editing = state.editingTag === r.full_name
+  const blurb = humanBlurb(r, state.locale)
+  const cat = categorizeRepo(r)
+  const catColor = categoryColor(cat)
+  const name = r.full_name.split('/')
+  return `
+  <article class="card gallery-card fade-in" data-id="${r.id}">
+    <a class="card-hit" href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">
+      <div class="card-top">
+        <img class="avatar" src="${avatarUrl(r.owner_login)}" alt="" loading="lazy" width="48" height="48"/>
+        <div class="card-title-wrap">
+          <div class="card-owner">${escapeHtml(name[0] ?? r.owner_login)}</div>
+          <h3>${escapeHtml(name[1] ?? r.full_name)}
+            ${r.archived ? `<span class="badge">${escapeHtml(dict.archived)}</span>` : ''}
+            ${r.fork ? `<span class="badge">${escapeHtml(dict.fork)}</span>` : ''}
+          </h3>
+        </div>
+        <span class="cat-badge" style="--c:${catColor}">${escapeHtml(buildCategoryBuckets([r], state.locale)[0]?.label ?? cat)}</span>
+      </div>
+      <p class="blurb">${escapeHtml(blurb)}</p>
+      <div class="card-facts">
+        <span class="fact lang"><i class="lang-dot" style="background:${languageColor(r.language)}"></i>${escapeHtml(r.language || '—')}</span>
+        <span class="fact">★ ${formatStars(r.stargazers_count, state.locale)}</span>
+        <span class="fact">⑂ ${formatStars(r.forks_count, state.locale)} ${escapeHtml(dict.forks)}</span>
+        <span class="fact muted">${escapeHtml(formatRelative(r.starred_at, state.locale))}</span>
+      </div>
+      <div class="topics">${r.topics
+        .slice(0, 6)
+        .map((topic) => `<span class="chip">${escapeHtml(topic)}</span>`)
+        .join('')}</div>
+      ${local.length ? `<div class="local-tags">${local.map((tag) => `<span class="chip mine">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+    </a>
+    ${
+      editing
+        ? `<div class="tag-edit">
+      <input type="text" data-tag-input="${escapeHtml(r.full_name)}" placeholder="${escapeHtml(dict.localTags)}" value="${escapeHtml(local.join(', '))}" />
+      <button type="button" class="btn btn-primary" data-tag-save="${escapeHtml(r.full_name)}">${escapeHtml(dict.saveTags)}</button>
+      <button type="button" class="btn" data-tag-cancel="${escapeHtml(r.full_name)}">${escapeHtml(dict.cancel)}</button>
+    </div>`
+        : `<button type="button" class="btn btn-ghost btn-tag" data-tag-edit="${escapeHtml(r.full_name)}">＋ ${escapeHtml(dict.localTags)}</button>`
+    }
   </article>`
 }
 
 function renderListItem(r: StarredRepo): string {
+  const blurb = humanBlurb(r, state.locale)
   return `
-  <div class="list-item">
-    <div><a href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener"><strong>${escapeHtml(r.full_name)}</strong></a></div>
-    <p class="desc">${escapeHtml(r.description || '')}</p>
-    <span class="chip lang">${escapeHtml(r.language || '—')}</span>
-    <span class="meta-row">★ ${fmtNum(r.stargazers_count)} · ${fmtDate(r.starred_at)}</span>
-  </div>`
+  <a class="list-item gallery-list fade-in" href="${escapeHtml(r.html_url)}" target="_blank" rel="noopener">
+    <img class="avatar sm" src="${avatarUrl(r.owner_login)}" alt="" loading="lazy" width="36" height="36"/>
+    <div class="list-body">
+      <strong>${escapeHtml(r.full_name)}</strong>
+      <p class="blurb compact">${escapeHtml(blurb)}</p>
+    </div>
+    <span class="fact lang"><i class="lang-dot" style="background:${languageColor(r.language)}"></i>${escapeHtml(r.language || '—')}</span>
+    <span class="meta-row">★ ${formatStars(r.stargazers_count, state.locale)} · ${escapeHtml(formatRelative(r.starred_at, state.locale))}</span>
+  </a>`
 }
 
 function renderMain(): string {
-  if (!state.repos.length && !state.loading) {
-    return `<main class="main" id="main-root"><div class="empty"><h2>Turn starred repos into a searchable gallery</h2>
-      <p>Load any public GitHub username. Optional PAT raises rate limits. Tags stay in your browser only.</p>
-      <p>Try <a href="?user=godfay-g">?user=godfay-g</a> or your own username.</p></div></main>`
+  const dict = d()
+  if (state.loading && !state.repos.length) {
+    return `<main class="main" id="main-root"><div class="empty gallery-empty fade-in">
+      <div class="progress wide"><i></i></div>
+      <h2>${escapeHtml(dict.fetching)}</h2>
+      <p>${escapeHtml(state.progress || dict.loading)}</p>
+    </div></main>`
   }
+  if (state.error && !state.repos.length) {
+    return `<main class="main" id="main-root"><div class="empty gallery-empty error-panel fade-in">
+      <h2>${escapeHtml(state.error)}</h2>
+    </div></main>`
+  }
+  if (!state.repos.length) {
+    return `<main class="main" id="main-root"><div class="empty gallery-empty fade-in">
+      <div class="empty-illu">★</div>
+      <h2>${escapeHtml(dict.emptyTitle)}</h2>
+      <p>${escapeHtml(dict.emptyBody)}</p>
+      <p class="empty-cta">${escapeHtml(dict.emptyTry)} <a href="?user=godfay-g">godfay-g</a></p>
+    </div></main>`
+  }
+
+  if (state.view === 'map') {
+    const list = visibleRepos()
+    return `<main class="main" id="main-root">
+      ${renderStarMap()}
+      ${
+        state.mapFocus
+          ? `<div class="grid gallery-grid map-follow">${list.map(renderCard).join('')}</div>`
+          : ''
+      }
+    </main>`
+  }
+
   const list = visibleRepos()
-  if (!list.length && state.repos.length) {
-    return `<main class="main" id="main-root"><div class="empty"><h2>No matches</h2><p>Try clearing filters or search.</p></div></main>`
+  if (!list.length) {
+    return `<main class="main" id="main-root"><div class="empty fade-in">
+      <h2>${escapeHtml(dict.noMatchTitle)}</h2>
+      <p>${escapeHtml(dict.noMatchBody)}</p>
+      <button type="button" class="btn btn-primary" id="btn-clear-filters-empty">${escapeHtml(dict.clearFilters)}</button>
+    </div></main>`
   }
   if (state.view === 'list') {
     return `<main class="main" id="main-root"><div class="list">${list.map(renderListItem).join('')}</div></main>`
   }
-  return `<main class="main" id="main-root"><div class="grid">${list.map(renderCard).join('')}</div></main>`
+  return `<main class="main" id="main-root"><div class="grid gallery-grid">${list.map(renderCard).join('')}</div></main>`
+}
+
+function renderAdvanced(): string {
+  const dict = d()
+  const remaining =
+    state.remaining != null && state.limit != null
+      ? `<p class="muted">${escapeHtml(dict.apiRemaining)}: ${state.remaining}/${state.limit}</p>`
+      : ''
+  return `
+  <details class="advanced" id="advanced" ${state.advancedOpen ? 'open' : ''}>
+    <summary>${escapeHtml(dict.advanced)}</summary>
+    <div class="advanced-body">
+      <button class="btn" type="button" id="btn-token">${state.token ? escapeHtml(dict.patOk) : escapeHtml(dict.pat)}</button>
+      <label class="check-plain"><input type="checkbox" id="exclude-forks" ${state.filters.excludeForks ? 'checked' : ''} ${state.repos.length ? '' : 'disabled'}/> ${escapeHtml(dict.excludeForks)}</label>
+      <button type="button" class="btn" id="export-json" ${state.repos.length ? '' : 'disabled'}>${escapeHtml(dict.exportJson)}</button>
+      <button type="button" class="btn" id="export-html" ${state.repos.length ? '' : 'disabled'}>${escapeHtml(dict.exportHtml)}</button>
+      ${remaining}
+      <p class="muted">${escapeHtml(dict.patHint)}</p>
+    </div>
+  </details>`
 }
 
 function renderFooter(): string {
   return `<footer class="app-footer">
-    <span>MIT · Client-side only · PAT never leaves your browser for third parties (only GitHub API)</span>
-    <span><a href="https://github.com/godfay-g/github-stars-gallery" target="_blank" rel="noopener">Source</a></span>
+    <span>MIT · ${escapeHtml(d().tagline)}</span>
+    <a href="https://github.com/godfay-g/github-stars-gallery" target="_blank" rel="noopener">GitHub</a>
   </footer>`
 }
 
 function renderTokenModal(): void {
-  const existing = document.getElementById('token-modal')
-  if (existing) existing.remove()
+  const dict = d()
+  document.getElementById('token-modal')?.remove()
   const backdrop = document.createElement('div')
   backdrop.className = 'modal-backdrop'
   backdrop.id = 'token-modal'
   backdrop.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true">
-      <h2>Optional GitHub PAT</h2>
-      <p>Stored in <code>localStorage</code> only. Use a fine-grained token with <strong>read-only</strong> public repo access, or classic <code>public_repo</code>. Never commit tokens.</p>
-      <p>Anonymous ≈ 60 req/h · Authenticated ≈ 5,000 req/h.</p>
-      <input type="password" id="pat-input" placeholder="ghp_… or github_pat_…" value="${escapeHtml(state.token)}" autocomplete="off" />
+      <h2>${escapeHtml(dict.patTitle)}</h2>
+      <p>${escapeHtml(dict.patBody)}</p>
+      <p>${escapeHtml(dict.patHint)}</p>
+      <input type="password" id="pat-input" placeholder="ghp_… / github_pat_…" value="${escapeHtml(state.token)}" autocomplete="off" />
       <div class="modal-actions">
-        <button type="button" class="btn" id="pat-clear">Clear</button>
-        <button type="button" class="btn btn-ghost" id="pat-cancel">Cancel</button>
-        <button type="button" class="btn btn-primary" id="pat-save">Save</button>
+        <button type="button" class="btn" id="pat-clear">${escapeHtml(dict.clearPat)}</button>
+        <button type="button" class="btn btn-ghost" id="pat-cancel">${escapeHtml(dict.cancel)}</button>
+        <button type="button" class="btn btn-primary" id="pat-save">${escapeHtml(dict.save)}</button>
       </div>
     </div>`
   document.body.appendChild(backdrop)
@@ -299,12 +556,53 @@ function renderTokenModal(): void {
   })
 }
 
-function syncMultiFromDom(kind: 'languages' | 'topics'): void {
-  const boxes = root.querySelectorAll<HTMLInputElement>(`input[data-multi-kind="${kind}"]`)
-  state.filters[kind] = [...boxes].filter((b) => b.checked).map((b) => b.value)
+function applyMapTransform(): void {
+  const stage = document.getElementById('star-map-stage')
+  if (!stage) return
+  stage.style.transform = `translate(${state.mapPanX}px, ${state.mapPanY}px) scale(${state.mapZoom})`
+  stage.style.transformOrigin = '400px 300px'
 }
 
-/** Update status / stats / main without tearing down the search input. */
+function bindMapGestures(): void {
+  const viewport = document.getElementById('star-map-viewport')
+  if (!viewport || mapGesturesBound) return
+  mapGesturesBound = true
+  let dragging = false
+  let lastX = 0
+  let lastY = 0
+
+  viewport.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? -0.08 : 0.08
+      state.mapZoom = Math.min(2.4, Math.max(0.55, state.mapZoom + delta))
+      applyMapTransform()
+    },
+    { passive: false },
+  )
+
+  viewport.addEventListener('pointerdown', (e) => {
+    dragging = true
+    lastX = e.clientX
+    lastY = e.clientY
+    viewport.setPointerCapture(e.pointerId)
+  })
+  viewport.addEventListener('pointermove', (e) => {
+    if (!dragging) return
+    state.mapPanX += e.clientX - lastX
+    state.mapPanY += e.clientY - lastY
+    lastX = e.clientX
+    lastY = e.clientY
+    applyMapTransform()
+  })
+  const end = () => {
+    dragging = false
+  }
+  viewport.addEventListener('pointerup', end)
+  viewport.addEventListener('pointercancel', end)
+}
+
 function renderResults(): void {
   const status = document.getElementById('status-bar')
   const stats = document.getElementById('stats-root')
@@ -313,24 +611,35 @@ function renderResults(): void {
     render()
     return
   }
+  const searchEl = document.getElementById('search') as HTMLInputElement | null
+  const focused = document.activeElement === searchEl
+  const pos = searchEl?.selectionStart ?? null
+
+  mapGesturesBound = false
   status.outerHTML = renderStatus()
-  stats.outerHTML = renderStats()
+  stats.outerHTML = renderOverview()
   main.outerHTML = renderMain()
+  bindMapGestures()
 
-  const n = visibleRepos().length
-  const ej = document.getElementById('export-json') as HTMLButtonElement | null
-  const eh = document.getElementById('export-html') as HTMLButtonElement | null
-  if (ej) ej.disabled = n === 0
-  if (eh) eh.disabled = n === 0
-
-  // Refresh multi summary labels without closing open panels if possible
-  for (const kind of ['languages', 'topics'] as const) {
-    const details = root.querySelector<HTMLDetailsElement>(`details[data-multi="${kind}"]`)
-    const summary = details?.querySelector('summary')
-    if (summary) summary.textContent = multiLabel(kind)
-    const clearBtn = details?.querySelector<HTMLButtonElement>(`[data-multi-clear="${kind}"]`)
-    if (clearBtn) clearBtn.disabled = !state.filters[kind].length
+  if (focused) {
+    const el = document.getElementById('search') as HTMLInputElement | null
+    if (el) {
+      el.focus()
+      if (pos != null) el.setSelectionRange(pos, pos)
+    }
   }
+}
+
+function focusCategory(id: CategoryId): void {
+  state.mapFocus = id
+  state.filters.categories = [id]
+  state.mapZoom = 1
+  state.mapPanX = 0
+  state.mapPanY = 0
+  if (state.view !== 'map') state.view = 'map'
+  renderResults()
+  // also refresh chips in toolbar
+  render()
 }
 
 function bindShell(): void {
@@ -345,47 +654,126 @@ function bindShell(): void {
     void loadUser(u, false)
   })
 
+  root.addEventListener('toggle', (e) => {
+    const el = e.target as HTMLElement
+    if (el.id === 'advanced') state.advancedOpen = (el as HTMLDetailsElement).open
+  })
+
   root.addEventListener('click', (e) => {
-    const t = e.target as HTMLElement
-    if (t.id === 'btn-refresh' || t.closest?.('#btn-refresh')) {
+    const target = e.target as HTMLElement
+
+    const localeBtn = target.closest?.('[data-locale]') as HTMLElement | null
+    if (localeBtn) {
+      state.locale = localeBtn.getAttribute('data-locale') as Locale
+      saveLocale(state.locale)
+      document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : 'en'
+      render()
+      return
+    }
+
+    if (target.id === 'btn-refresh' || target.closest?.('#btn-refresh')) {
       if (state.username) void loadUser(state.username, true)
       return
     }
-    if (t.id === 'btn-token' || t.closest?.('#btn-token')) {
+    if (target.id === 'btn-token' || target.closest?.('#btn-token')) {
       renderTokenModal()
       return
     }
-    if (t.id === 'view-card') {
+    if (target.id === 'view-map') {
+      state.view = 'map'
+      render()
+      return
+    }
+    if (target.id === 'view-card') {
       state.view = 'card'
       render()
       return
     }
-    if (t.id === 'view-list') {
+    if (target.id === 'view-list') {
       state.view = 'list'
       render()
       return
     }
-    if (t.id === 'export-json') {
+    if (target.id === 'btn-clear-filters' || target.id === 'btn-clear-filters-empty') {
+      clearFilters()
+      render()
+      return
+    }
+    if (target.id === 'btn-map-back' || target.closest?.('[data-map-back]')) {
+      state.mapFocus = null
+      state.filters.categories = []
+      render()
+      return
+    }
+    const zoom = target.closest?.('[data-zoom]') as HTMLElement | null
+    if (zoom) {
+      const kind = zoom.getAttribute('data-zoom')
+      if (kind === 'in') state.mapZoom = Math.min(2.4, state.mapZoom + 0.15)
+      if (kind === 'out') state.mapZoom = Math.max(0.55, state.mapZoom - 0.15)
+      if (kind === 'reset') {
+        state.mapZoom = 1
+        state.mapPanX = 0
+        state.mapPanY = 0
+      }
+      applyMapTransform()
+      return
+    }
+    const catNode = target.closest?.('[data-map-cat]') as HTMLElement | null
+    if (catNode) {
+      focusCategory(catNode.getAttribute('data-map-cat') as CategoryId)
+      return
+    }
+    const openUrl = target.closest?.('[data-open-url]') as HTMLElement | null
+    if (openUrl) {
+      window.open(openUrl.getAttribute('data-open-url')!, '_blank', 'noopener')
+      return
+    }
+    if (target.id === 'export-json') {
       exportJson(state.username, visibleRepos())
       return
     }
-    if (t.id === 'export-html') {
+    if (target.id === 'export-html') {
       exportHtml(state.username, visibleRepos())
       return
     }
-    const clear = t.closest?.('[data-multi-clear]') as HTMLElement | null
-    if (clear) {
-      const kind = clear.getAttribute('data-multi-clear') as 'languages' | 'topics'
+
+    const all = target.closest?.('[data-chip-all]') as HTMLElement | null
+    if (all) {
+      const kind = all.getAttribute('data-chip-all') as 'languages' | 'topics' | 'categories'
       state.filters[kind] = []
-      const details = root.querySelector<HTMLDetailsElement>(`details[data-multi="${kind}"]`)
-      details?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((c) => {
-        c.checked = false
-      })
+      if (kind === 'categories') state.mapFocus = null
+      render()
+      return
+    }
+    const chip = target.closest?.('[data-chip-value]') as HTMLElement | null
+    if (chip) {
+      const kind = chip.getAttribute('data-chip-kind') as 'languages' | 'topics' | 'categories'
+      const value = chip.getAttribute('data-chip-value')!
+      state.filters[kind] = toggleIn(state.filters[kind], value)
+      if (kind === 'categories') {
+        state.mapFocus = state.filters.categories.length === 1 ? (state.filters.categories[0] as CategoryId) : null
+      }
+      render()
+      return
+    }
+
+    const edit = target.closest?.('[data-tag-edit]') as HTMLElement | null
+    if (edit) {
+      e.preventDefault()
+      state.editingTag = edit.getAttribute('data-tag-edit')
       renderResults()
       return
     }
-    const save = t.closest?.('[data-tag-save]') as HTMLElement | null
+    const cancel = target.closest?.('[data-tag-cancel]') as HTMLElement | null
+    if (cancel) {
+      e.preventDefault()
+      state.editingTag = null
+      renderResults()
+      return
+    }
+    const save = target.closest?.('[data-tag-save]') as HTMLElement | null
     if (save) {
+      e.preventDefault()
       const name = save.getAttribute('data-tag-save')!
       const input = root.querySelector<HTMLInputElement>(`[data-tag-input="${CSS.escape(name)}"]`)
       if (!input) return
@@ -394,35 +782,28 @@ function bindShell(): void {
         .map((x) => x.trim())
         .filter(Boolean)
       state.tags = setRepoTags(state.tags, name, tags)
+      state.editingTag = null
       renderResults()
     }
   })
 
   root.addEventListener('input', (e) => {
-    const t = e.target as HTMLElement
-    if (t.id === 'search') {
-      state.filters.query = (t as HTMLInputElement).value
+    const el = e.target as HTMLElement
+    if (el.id === 'search') {
+      state.filters.query = (el as HTMLInputElement).value
       renderResults()
-      return
     }
   })
 
   root.addEventListener('change', (e) => {
-    const t = e.target as HTMLElement
-    if (t.id === 'sort') {
-      state.sort = (t as HTMLSelectElement).value as SortKey
+    const el = e.target as HTMLElement
+    if (el.id === 'sort') {
+      state.sort = (el as HTMLSelectElement).value as SortKey
       renderResults()
       return
     }
-    if (t.id === 'exclude-forks') {
-      state.filters.excludeForks = (t as HTMLInputElement).checked
-      renderResults()
-      return
-    }
-    const box = t as HTMLInputElement
-    if (box.matches?.('input[data-multi-kind]')) {
-      const kind = box.getAttribute('data-multi-kind') as 'languages' | 'topics'
-      syncMultiFromDom(kind)
+    if (el.id === 'exclude-forks') {
+      state.filters.excludeForks = (el as HTMLInputElement).checked
       renderResults()
     }
   })
@@ -432,10 +813,18 @@ function render(): void {
   const searchEl = document.getElementById('search') as HTMLInputElement | null
   const searchFocused = document.activeElement === searchEl
   const searchPos = searchEl ? searchEl.selectionStart : null
+  mapGesturesBound = false
 
   root.innerHTML =
-    renderHeader() + renderToolbar() + renderStatus() + renderStats() + renderMain() + renderFooter()
+    renderHeader() +
+    renderToolbar() +
+    renderStatus() +
+    renderOverview() +
+    renderMain() +
+    renderAdvanced() +
+    renderFooter()
   bindShell()
+  bindMapGestures()
 
   if (searchFocused) {
     const el = document.getElementById('search') as HTMLInputElement | null
@@ -453,8 +842,14 @@ async function loadUser(username: string, force: boolean): Promise<void> {
   state.username = username
   state.loading = true
   state.error = null
-  state.progress = force ? 'Refreshing…' : 'Loading…'
-  state.filters = { ...state.filters, languages: [], topics: [] }
+  state.progress = force ? d().loading : d().fetching
+  state.filters = { query: '', languages: [], topics: [], categories: [], excludeForks: false }
+  state.editingTag = null
+  state.mapFocus = null
+  state.mapZoom = 1
+  state.mapPanX = 0
+  state.mapPanY = 0
+  state.view = 'map'
   setUrlUser(username)
   if (force) clearCache(username)
   render()
@@ -465,10 +860,9 @@ async function loadUser(username: string, force: boolean): Promise<void> {
       signal: abort.signal,
       force,
       onPage: (page, acc, remaining, limit) => {
-        state.progress = page === 0 ? `Cache hit · ${acc} repos` : `Page ${page} · ${acc} repos`
+        state.progress = page === 0 ? `${d().cacheHit} · ${acc}` : `${d().page} ${page} · ${acc}`
         state.remaining = remaining
         state.limit = limit
-        // Progress only — keep search/filter DOM stable where possible
         const status = document.getElementById('status-bar')
         if (status) status.outerHTML = renderStatus()
         else render()
@@ -490,6 +884,7 @@ async function loadUser(username: string, force: boolean): Promise<void> {
   }
 }
 
+document.documentElement.lang = state.locale === 'zh' ? 'zh-CN' : 'en'
 render()
 const initial = qsUser()
 if (initial) void loadUser(initial, false)
