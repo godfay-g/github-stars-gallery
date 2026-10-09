@@ -1,0 +1,20 @@
+{
+  "name": "github-stars-gallery",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browse, search, and export your GitHub starred repositories",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "export": "node scripts/export.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
