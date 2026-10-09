@@ -19,7 +19,7 @@ X-GitHub-Api-Version: 2022-11-28
 User-Agent: github-stars-gallery
 ```
 
-映射注意：`star+json` 响应里仓库在根上，`starred_at` 同级；`owner.login` → `owner_login`；缺 `topics` 当 `[]`。
+映射注意：`star+json` 实际为 `{ starred_at, repo: {…} }`（仓库在 `repo` 内）；兼容扁平 mock。`owner.login` → `owner_login`；缺 `topics` 当 `[]`。
 
 ## 3. 分页
 
