@@ -168,7 +168,7 @@ input:focus, select:focus { border-color: color-mix(in srgb, var(--accent) 55%, 
 .overview-total .lbl { color: var(--muted); }
 .overview-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.85rem;
 }
 @media (max-width: 900px) {
@@ -183,7 +183,48 @@ input:focus, select:focus { border-color: color-mix(in srgb, var(--accent) 55%, 
 }
 .overview-card h3 { margin: 0 0 0.65rem; font-size: 0.92rem; color: var(--muted); font-weight: 650; }
 
+.cat-card { margin-bottom: 0.85rem; }
+.cat-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.65rem; }
+.cat-card-head h3 { margin: 0; }
+.cat-hint { font-size: 0.78rem; }
 .cat-pills { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.cat-pill-all .cat-count { background: color-mix(in srgb, var(--accent) 30%, var(--bg)); }
+/* narrow screens: one horizontally scrollable row instead of wrapping (never hidden) */
+@media (max-width: 640px) {
+  .cat-hint { display: none; }
+  .cat-pills {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    padding: 2px 2px 6px;
+    margin: 0 -2px;
+    scrollbar-width: thin;
+  }
+  .cat-pill { flex: none; scroll-snap-align: start; white-space: nowrap; }
+}
+.cat-current { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin: 0.2rem 0 0.75rem; font-size: 0.88rem; }
+.cat-current-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  border: 1px solid color-mix(in srgb, var(--c) 50%, var(--border));
+  background: color-mix(in srgb, var(--c) 16%, transparent);
+  border-radius: 999px;
+  padding: 0.15rem 0.2rem 0.15rem 0.7rem;
+}
+.cat-current-x {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+}
+.cat-current-x:hover { color: var(--text); background: color-mix(in srgb, var(--c) 25%, transparent); }
+.cat-current-clear { padding: 0.25rem 0.6rem; font-size: 0.82rem; }
 .cat-pill {
   border: 1px solid color-mix(in srgb, var(--c) 45%, var(--border));
   background: color-mix(in srgb, var(--c) 14%, transparent);
