@@ -1,5 +1,6 @@
 import type { Filters, LocalTagMap, SortKey, StarredRepo } from '../types'
 import { getRepoTags } from '../state/tags'
+import { categorizeRepo } from './categories'
 
 export function applyFilters(
   repos: StarredRepo[],
@@ -9,20 +10,15 @@ export function applyFilters(
   const q = filters.query.trim().toLowerCase()
   const langSet = filters.languages.length ? new Set(filters.languages) : null
   const topicSet = filters.topics.length ? new Set(filters.topics) : null
+  const catSet = filters.categories.length ? new Set(filters.categories) : null
   return repos.filter((r) => {
     if (filters.excludeForks && r.fork) return false
     if (langSet && (!r.language || !langSet.has(r.language))) return false
     if (topicSet && !r.topics.some((t) => topicSet.has(t))) return false
+    if (catSet && !catSet.has(categorizeRepo(r))) return false
     if (!q) return true
     const local = getRepoTags(tags, r.full_name).join(' ')
-    const hay = [
-      r.full_name,
-      r.description ?? '',
-      r.owner_login,
-      r.topics.join(' '),
-      r.language ?? '',
-      local,
-    ]
+    const hay = [r.full_name, r.description ?? '', r.owner_login, r.topics.join(' '), r.language ?? '', local, categorizeRepo(r)]
       .join(' ')
       .toLowerCase()
     return hay.includes(q)
