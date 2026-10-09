@@ -2,8 +2,6 @@ import type { Locale } from './lib/format'
 
 export type Dict = {
   brand: string
-  tagline: string
-  usernamePlaceholder: string
   load: string
   loading: string
   refresh: string
@@ -11,6 +9,10 @@ export type Dict = {
   allLanguages: string
   allTopics: string
   allCategories: string
+  catMultiHint: string
+  catCurrent: string
+  catRemove: string
+  catClearAll: string
   categories: string
   sortStarred: string
   sortStars: string
@@ -35,9 +37,6 @@ export type Dict = {
   save: string
   cancel: string
   clearPat: string
-  emptyTitle: string
-  emptyBody: string
-  emptyTry: string
   noMatchTitle: string
   noMatchBody: string
   shown: string
@@ -48,7 +47,6 @@ export type Dict = {
   page: string
   archived: string
   fork: string
-  noDesc: string
   localTags: string
   saveTags: string
   localeZh: string
@@ -69,15 +67,17 @@ export type Dict = {
 
 const zh: Dict = {
   brand: 'GitHub 收藏图库',
-  tagline: '一眼看懂、按类浏览你的 Star',
-  usernamePlaceholder: '输入 GitHub 用户名开始整理收藏',
   load: '开始整理',
   loading: '加载中…',
   refresh: '重新同步',
   searchPlaceholder: '搜仓库名、一句话简介或标签…',
   allLanguages: '全部语言',
   allTopics: '全部主题',
-  allCategories: '全部分类',
+  allCategories: '全部',
+  catMultiHint: '按住 ⌘/Ctrl 点击可多选',
+  catCurrent: '当前：',
+  catRemove: '移除「{name}」',
+  catClearAll: '全部清除',
   categories: '智能分类',
   sortStarred: '最近收藏',
   sortStars: '最受欢迎',
@@ -102,9 +102,6 @@ const zh: Dict = {
   save: '保存',
   cancel: '取消',
   clearPat: '清除',
-  emptyTitle: '输入 GitHub 用户名，开始整理收藏',
-  emptyBody: '自动按「Web / AI / 工具」等分类，并用星状图一眼看清收藏结构。',
-  emptyTry: '先试试',
   noMatchTitle: '没有找到匹配的项目',
   noMatchBody: '换个关键词，或清除筛选看看全部收藏。',
   shown: '正在看',
@@ -115,7 +112,6 @@ const zh: Dict = {
   page: '第',
   archived: '已归档',
   fork: 'Fork',
-  noDesc: '暂无简介',
   localTags: '本地标签',
   saveTags: '保存',
   localeZh: '中文',
@@ -136,15 +132,17 @@ const zh: Dict = {
 
 const en: Dict = {
   brand: 'GitHub Stars Gallery',
-  tagline: 'See what you starred—by category, at a glance',
-  usernamePlaceholder: 'Enter a GitHub username to organize stars',
   load: 'Open gallery',
   loading: 'Loading…',
   refresh: 'Refresh',
   searchPlaceholder: 'Search name, one-liner, or tags…',
   allLanguages: 'All languages',
   allTopics: 'All topics',
-  allCategories: 'All categories',
+  allCategories: 'All',
+  catMultiHint: 'Hold ⌘/Ctrl to select several',
+  catCurrent: 'Showing:',
+  catRemove: 'Remove “{name}”',
+  catClearAll: 'Clear all',
   categories: 'Categories',
   sortStarred: 'Recently starred',
   sortStars: 'Most stars',
@@ -169,9 +167,6 @@ const en: Dict = {
   save: 'Save',
   cancel: 'Cancel',
   clearPat: 'Clear',
-  emptyTitle: 'Enter a GitHub username to organize stars',
-  emptyBody: 'We auto-group into Web / AI / Tools and show a star map of your collection.',
-  emptyTry: 'Try',
   noMatchTitle: 'No matches',
   noMatchBody: 'Try another keyword, or clear filters.',
   shown: 'Showing',
@@ -182,7 +177,6 @@ const en: Dict = {
   page: 'Page',
   archived: 'archived',
   fork: 'fork',
-  noDesc: 'No description',
   localTags: 'Local tags',
   saveTags: 'Save',
   localeZh: '中文',

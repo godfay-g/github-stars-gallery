@@ -38,6 +38,8 @@ import {
 } from './config/schema'
 import { applyTheme, loadLocalSettings, loadRecent, loadSiteConfig, pushRecent, removeRecent, saveLocalSettings } from './config/store'
 import { openSettings, refreshSettings } from './ui/settings'
+import { renderCategoryPills, renderCurrentCategories, syncPillsDom } from './ui/categoryPills'
+import { clickCategory, focusForSelection, isAdditiveClick, removeCategory, selectionFromMapFocus } from './lib/catSelect'
 
 type State = {
   username: string
@@ -215,8 +217,10 @@ function getStarMap(): StarMap {
       locale: state.locale,
       labels: mapLabels(),
       onFocusChange: (cat) => {
+        // map → pills: expanding selects that category, collapsing returns to "all" (multi-select kept)
         state.mapFocus = cat
-        state.filters.categories = cat ? [cat] : []
+        state.filters.categories = selectionFromMapFocus(state.filters.categories, cat)
+        syncPillsDom(document, state.filters.categories)
         scheduleUrl()
         // Let the expand/collapse animation own the first ~400ms; heavy card DOM lands after.
         updateUI(true)
@@ -356,7 +360,7 @@ function renderWelcome(): string {
 }
 
 function renderChipRow(
-  kind: 'languages' | 'topics' | 'categories',
+  kind: 'languages' | 'topics',
   items: { label: string; value: string; color?: string }[],
   allLabel: string,
 ): string {
@@ -381,7 +385,6 @@ function renderChipRow(
 function renderToolbar(): string {
   const dict = d()
   const has = state.repos.length > 0
-  const buckets = buildCategoryBuckets(state.repos, state.locale)
   const langs = allLanguages(state.repos)
     .slice(0, 12)
     .map((l) => ({ label: l, value: l, color: languageColor(l) }))
@@ -391,11 +394,6 @@ function renderToolbar(): string {
     .slice(0, 12)
     .map((x) => ({ label: `${x.topic}`, value: x.topic }))
   for (const tp of state.filters.topics) if (!topics.some((x) => x.value === tp)) topics.push({ label: tp, value: tp })
-  const cats = buckets.map((b) => ({
-    label: `${b.label} ${b.repos.length}`,
-    value: b.id,
-    color: b.color,
-  }))
   const opt = (v: SortKey, label: string) => `<option value="${v}" ${state.sort === v ? 'selected' : ''}>${escapeHtml(label)}</option>`
 
   return `
@@ -412,7 +410,6 @@ function renderToolbar(): string {
       </div>
       ${hasActiveFilters() ? `<button type="button" class="btn" id="btn-clear-filters">${escapeHtml(dict.clearFilters)}</button>` : ''}
     </div>
-    ${has ? `<div class="filter-block"><div class="filter-label">${escapeHtml(dict.categories)}</div>${renderChipRow('categories', cats, dict.allCategories)}</div>` : ''}
     ${has ? `<div class="filter-block"><div class="filter-label">${escapeHtml(dict.allLanguages)}</div>${renderChipRow('languages', langs, dict.allLanguages)}</div>` : ''}
     ${has ? `<div class="filter-block"><div class="filter-label">${escapeHtml(dict.allTopics)}</div>${renderChipRow('topics', topics, dict.allTopics)}</div>` : ''}
   </div>`
@@ -449,19 +446,13 @@ function renderOverview(): string {
       <h2>${escapeHtml(dict.overview)}</h2>
       <div class="overview-total"><span class="num">${formatStars(total, state.locale)}</span><span class="lbl">${escapeHtml(dict.total)}</span></div>
     </div>
+    ${renderCategoryPills(
+      buckets.map((b) => ({ id: b.id, label: b.label, color: b.color, count: b.repos.length })),
+      state.filters.categories,
+      { title: dict.categories, all: dict.allCategories, hint: dict.catMultiHint },
+      total,
+    )}
     <div class="overview-grid">
-      <div class="overview-card">
-        <h3>${escapeHtml(dict.categories)}</h3>
-        <div class="cat-pills">
-          ${buckets
-            .map(
-              (b) => `<button type="button" class="cat-pill ${state.filters.categories.includes(b.id) ? 'active' : ''}" data-chip-kind="categories" data-chip-value="${b.id}" style="--c:${b.color}">
-                <span class="cat-count">${b.repos.length}</span>${escapeHtml(b.label)}
-              </button>`,
-            )
-            .join('')}
-        </div>
-      </div>
       <div class="overview-card">
         <h3>${escapeHtml(dict.topLanguages)}</h3>
         <div class="lang-bars">
@@ -609,19 +600,39 @@ function renderMain(): string {
 function renderResultsInner(): string {
   const dict = d()
   const list = visibleRepos()
+  const current = renderCurrentBar()
   if (state.view === 'map') {
     const foot = `<p class="muted map-foot">${escapeHtml(dict.shown)} ${list.length} / ${state.repos.length}</p>`
-    return state.mapFocus ? `${foot}<div class="grid gallery-grid map-follow" id="results-grid">${progressiveCards(list)}</div>` : foot
+    return state.filters.categories.length
+      ? `${current}${foot}<div class="grid gallery-grid map-follow" id="results-grid">${progressiveCards(list)}</div>`
+      : foot
   }
   if (!list.length) {
-    return `<div class="empty ${fx()}">
+    return `${current}<div class="empty ${fx()}">
       <h2>${escapeHtml(dict.noMatchTitle)}</h2>
       <p>${escapeHtml(dict.noMatchBody)}</p>
       <button type="button" class="btn btn-primary" id="btn-clear-filters-empty">${escapeHtml(dict.clearFilters)}</button>
     </div>`
   }
-  if (state.view === 'list') return `<div class="list">${list.map(renderListItem).join('')}</div>`
-  return `<div class="grid gallery-grid" id="results-grid">${progressiveCards(list)}</div>`
+  if (state.view === 'list') return `${current}<div class="list">${list.map(renderListItem).join('')}</div>`
+  return `${current}<div class="grid gallery-grid" id="results-grid">${progressiveCards(list)}</div>`
+}
+
+/** 「当前：AI / 机器学习 ×」 — shows the active categories above the results; × removes one. */
+function renderCurrentBar(): string {
+  const dict = d()
+  return renderCurrentCategories(
+    state.filters.categories.map((id) => ({ id, label: categoryLabel(id, state.locale), color: categoryColor(id) })),
+    { current: dict.catCurrent, remove: dict.catRemove, clear: dict.catClearAll },
+  )
+}
+
+/** Apply a new category selection from any entry point (pills, × tags, URL) and sync the map. */
+function setCategorySelection(next: string[]): void {
+  state.filters.categories = next
+  state.mapFocus = focusForSelection(next)
+  scheduleUrl()
+  updateUI()
 }
 
 /**
@@ -749,9 +760,7 @@ function renderResults(): void {
   withSearchFocus(() => {
     status.outerHTML = renderStatus()
     // Overview content only depends on the full repo set; just sync the active category pills.
-    for (const pill of stats.querySelectorAll<HTMLElement>('.cat-pill')) {
-      pill.classList.toggle('active', state.filters.categories.includes(pill.dataset.chipValue ?? ''))
-    }
+    syncPillsDom(stats, state.filters.categories)
     results.innerHTML = renderResultsInner()
   })
   syncStarMap()
@@ -994,23 +1003,35 @@ function bindShell(): void {
       return
     }
 
+    // categories: the overview pills are the only selector (plus × on the "current" bar)
+    if (target.closest?.('[data-cat-all]')) {
+      setCategorySelection([])
+      return
+    }
+    const catPill = target.closest?.('[data-cat-pill]') as HTMLElement | null
+    if (catPill) {
+      setCategorySelection(clickCategory(state.filters.categories, catPill.dataset.catPill ?? '', isAdditiveClick(e)))
+      return
+    }
+    const catRemove = target.closest?.('[data-cat-remove]') as HTMLElement | null
+    if (catRemove) {
+      setCategorySelection(removeCategory(state.filters.categories, catRemove.dataset.catRemove ?? ''))
+      return
+    }
+
     const all = target.closest?.('[data-chip-all]') as HTMLElement | null
     if (all) {
-      const kind = all.getAttribute('data-chip-all') as 'languages' | 'topics' | 'categories'
+      const kind = all.getAttribute('data-chip-all') as 'languages' | 'topics'
       state.filters[kind] = []
-      if (kind === 'categories') state.mapFocus = null
       scheduleUrl()
       updateUI()
       return
     }
     const chip = target.closest?.('[data-chip-value]') as HTMLElement | null
     if (chip) {
-      const kind = chip.getAttribute('data-chip-kind') as 'languages' | 'topics' | 'categories'
+      const kind = chip.getAttribute('data-chip-kind') as 'languages' | 'topics'
       const value = chip.getAttribute('data-chip-value')!
       state.filters[kind] = toggleIn(state.filters[kind], value)
-      if (kind === 'categories') {
-        state.mapFocus = state.filters.categories.length === 1 ? (state.filters.categories[0] as CategoryId) : null
-      }
       scheduleUrl()
       updateUI()
       return
@@ -1117,7 +1138,7 @@ function bindShell(): void {
       return
     }
     state.filters = filtersFromUrl(parsed)
-    state.mapFocus = state.filters.categories.length === 1 ? state.filters.categories[0] : null
+    state.mapFocus = focusForSelection(state.filters.categories)
     render()
   })
 }
@@ -1177,7 +1198,7 @@ async function loadUser(
     state.filters = { query: '', languages: [], topics: [], categories: [], excludeForks: false }
     state.view = prefs.view
   }
-  state.mapFocus = state.filters.categories.length === 1 ? state.filters.categories[0] : null
+  state.mapFocus = focusForSelection(state.filters.categories)
   if (changed) state.repos = []
   if (opts.mode && opts.mode !== 'none') writeUrl(opts.mode)
   recent = pushRecent(username)
