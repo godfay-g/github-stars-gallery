@@ -12,10 +12,11 @@
  */
 import { forceCollide, forceManyBody, forceSimulation, forceX, forceY, type Simulation, type SimulationNodeDatum } from 'd3-force'
 import type { StarredRepo } from '../types'
-import { categorizeRepo, CATEGORIES, humanBlurb, type CategoryId } from '../lib/categories'
+import { categorizeRepo, getCategories, humanBlurb, type CategoryId } from '../lib/categories'
+import { labelOf, type Motion } from '../config/schema'
 import { formatStars, languageColor, type Locale } from '../lib/format'
 import { avatarUrl, escapeHtml } from '../lib/html'
-import { boundsOf, capList, catRadius, exceedsThreshold, LOD_ZOOM, phyllotaxis, ringPositions, type Vec } from './layout'
+import { boundsOf, capList, MAX_REPO_NODES, catRadius, exceedsThreshold, LOD_ZOOM, phyllotaxis, ringPositions, type Vec } from './layout'
 import { dragIntent, wheelIntent } from './gestures'
 import { clampK, decay, fitBounds, smoothing, toWorld, zoomAt, type Cam } from './camera'
 import './starmap.css'
@@ -100,7 +101,15 @@ export class StarMap {
   private hintEl: HTMLParagraphElement
 
   private opts: StarMapOptions
-  private reduced: boolean
+  /** OS-level prefers-reduced-motion. */
+  private sysReduced: boolean
+  /** User setting: off = like reduced motion; light = no breathing; standard = everything. */
+  private motion: Motion = 'standard'
+  private maxNodes = MAX_REPO_NODES
+  private animating = false
+  private get reduced(): boolean {
+    return this.sysReduced || this.motion === 'off'
+  }
   private sim: Simulation<MNode, undefined>
   private nodes = new Map<string, MNode>()
   private center: MNode
@@ -148,9 +157,9 @@ export class StarMap {
   constructor(opts: StarMapOptions) {
     this.opts = opts
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    this.reduced = mq.matches
+    this.sysReduced = mq.matches
     mq.addEventListener?.('change', (e) => {
-      this.reduced = e.matches
+      this.sysReduced = e.matches
       this.relayout()
     })
 
@@ -258,9 +267,37 @@ export class StarMap {
     this.fillCenter()
   }
 
+  /** Runtime options (settings panel). Applied live; never re-mounts the map (F4). */
+  setOptions(o: { motion?: Motion; maxNodesPerCategory?: number }): void {
+    let changed = false
+    if (o.motion && o.motion !== this.motion) {
+      this.motion = o.motion
+      changed = true
+    }
+    if (o.maxNodesPerCategory && o.maxNodesPerCategory !== this.maxNodes) {
+      this.maxNodes = o.maxNodesPerCategory
+      changed = true
+    }
+    if (changed) {
+      this.relayout()
+      if (this.focusCat && !this.userMoved && this.attached) this.fitView(true)
+    }
+  }
+
+  /** Category rules changed (custom categories / manual assignment): rebuild nodes, keep the SVG. */
+  refreshCategories(): void {
+    const focus = this.focusCat
+    const repos = this.repos
+    this.repos = []
+    this.setData(repos)
+    this.setFilter(this.filter)
+    if (focus && this.nodes.has(`cat:${focus}`)) this.focus(focus, false)
+  }
+
   /** Full data swap (new user / refresh). Keeps the SVG, rebuilds node set. */
   setData(repos: StarredRepo[]): void {
     if (repos === this.repos) return
+    this.setHover(null)
     this.repos = repos
     this.repoCat.clear()
     for (const r of repos) this.repoCat.set(r.id, categorizeRepo(r))
@@ -272,7 +309,7 @@ export class StarMap {
     }
     this.focusCat = null
     const present = new Set(this.repoCat.values())
-    for (const c of CATEGORIES) {
+    for (const c of getCategories()) {
       if (!present.has(c.id)) continue
       const n = this.makeNode(`cat:${c.id}`, 'cat')
       n.cat = c.id
@@ -414,14 +451,15 @@ export class StarMap {
   }
 
   private catDef(id: CategoryId) {
-    return CATEGORIES.find((c) => c.id === id)!
+    const cats = getCategories()
+    return cats.find((c) => c.id === id) ?? cats[cats.length - 1]
   }
 
   private fillCat(n: MNode): void {
     const def = this.catDef(n.cat!)
     const total = [...this.repoCat.values()].filter((c) => c === n.cat).length
     n.r = catRadius(total)
-    const label = (this.opts.locale === 'zh' ? def.labelZh : def.labelEn).split(' / ')[0]
+    const label = labelOf(def, this.opts.locale, def.id).split(' / ')[0].slice(0, 14)
     n.el.innerHTML = `<g class="sm-inner">
       <circle class="sm-halo" r="${n.r + 10}" fill="${def.color}"/>
       <circle class="sm-core" r="${n.r}" fill="#121820" stroke="${def.color}" stroke-width="2.5"/>
@@ -518,7 +556,7 @@ export class StarMap {
     if (focus && focusNode) {
       const fnode = focusNode as MNode
       const list = this.visibleByCat.get(focus) ?? []
-      const { shown, overflow: of } = capList(list)
+      const { shown, overflow: of } = capList(list, this.maxNodes)
       overflow = of
       const homes = phyllotaxis(shown.length + (of ? 1 : 0), REPO_SPACING, REPO_OFFSET)
       const fresh = prevFocus !== focus
@@ -669,9 +707,12 @@ export class StarMap {
     if (this.frameTimes.length > 120) this.frameTimes.shift()
     if (this.frameCosts.length > 120) this.frameCosts.shift()
 
-    // keep running for breathing; when reduced motion and nothing moving, idle.
+    // keep running while anything moves (breathing counts); otherwise idle until the next kick().
     const busy =
-      !this.reduced ||
+      (!this.reduced && this.motion === 'standard') ||
+      this.animating ||
+      (!this.reduced && this.sim.alpha() > this.sim.alphaMin()) ||
+      this.inertia != null ||
       this.camGoal != null ||
       this.zoomGoal != null ||
       this.mode !== 'idle'
@@ -712,7 +753,8 @@ export class StarMap {
 
   private drawNodes(t: number, dt: number): void {
     const opF = smoothing(this.reduced ? 1 : 0.14, dt)
-    const breathe = !this.reduced
+    const breathe = !this.reduced && this.motion === 'standard'
+    let animating = false
     const dts = dt / 1000
     for (const n of this.nodes.values()) {
       if (!n.active) continue
@@ -727,6 +769,7 @@ export class StarMap {
         n.scV += a * dts
         n.sc += n.scV * dts
       }
+      if (Math.abs(n.opT - n.op) > 0.004 || Math.abs(n.scT - n.sc) > 0.002 || Math.abs(n.scV) > 0.01) animating = true
       if (n.opT === 0 && n.op < 0.01 && n.kind !== 'center') {
         this.deactivate(n)
         continue
@@ -748,6 +791,7 @@ export class StarMap {
       n.rx = x
       n.ry = y
     }
+    this.animating = animating
     // links follow rendered positions
     for (const n of this.nodes.values()) {
       if (!n.active || !n.link || !n.parent) continue
@@ -816,7 +860,7 @@ export class StarMap {
       const list = this.visibleByCat.get(n.cat!) ?? []
       const top = [...list].sort((a, b) => b.stargazers_count - a.stargazers_count).slice(0, 3)
       card.innerHTML = `<div class="sm-tip-head"><i class="sm-tip-dot" style="background:${def.color}"></i>
-          <strong>${escapeHtml(loc === 'zh' ? def.labelZh : def.labelEn)}</strong><span class="sm-tip-star">${list.length}</span></div>
+          <strong>${escapeHtml(labelOf(def, loc, def.id))}</strong><span class="sm-tip-star">${list.length}</span></div>
         ${top.length ? `<p>${top.map((r) => escapeHtml(r.full_name)).join('<br/>')}</p>` : ''}
         <div class="sm-tip-foot">${escapeHtml(this.focusCat === n.cat ? L.tipBack : L.tipExpand)}</div>`
     } else if (n.kind === 'more') {

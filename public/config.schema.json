@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GitHub Stars Gallery site config (config.json)",
+  "description": "Editor hints only. The app re-validates everything at runtime (src/config/schema.ts); invalid fields fall back to defaults.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "site": {
+      "type": "object",
+      "properties": {
+        "title": { "$ref": "#/$defs/i18n" },
+        "subtitle": { "$ref": "#/$defs/i18n" },
+        "logo": { "type": "string", "description": "Emoji/short text (≤4 chars) or an http(s)/relative image URL" },
+        "sourceUrl": { "type": "string", "description": "Footer link; empty string hides it" }
+      },
+      "additionalProperties": false
+    },
+    "defaultUser": { "$ref": "#/$defs/user", "description": "Auto-load this user when the URL has none. Empty = welcome page." },
+    "exampleUser": { "$ref": "#/$defs/user", "description": "Shown as the 'see an example' button. Empty = hidden." },
+    "accentColor": { "$ref": "#/$defs/color" },
+    "hidePatInput": { "type": "boolean" },
+    "basePath": { "type": "string", "pattern": "^(|/[A-Za-z0-9._~\\-/]*)$" },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "lang": { "enum": ["zh", "en", "auto"] },
+        "theme": { "enum": ["dark", "light", "system"] },
+        "view": { "enum": ["map", "card", "list"] },
+        "sort": { "enum": ["starred_at", "stars", "updated", "name"] },
+        "motion": { "enum": ["off", "light", "standard"] },
+        "density": { "enum": ["comfortable", "compact"] },
+        "maxNodesPerCategory": { "type": "integer", "minimum": 20, "maximum": 400 },
+        "autoOpenLastUser": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "categoriesMode": { "enum": ["merge", "replace"] },
+    "categories": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/category" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "i18n": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object", "properties": { "zh": { "type": "string" }, "en": { "type": "string" } }, "additionalProperties": false }
+      ]
+    },
+    "user": { "type": "string", "pattern": "^(|[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38})$" },
+    "color": { "type": "string", "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+    "category": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$" },
+        "label": { "$ref": "#/$defs/i18n" },
+        "color": { "$ref": "#/$defs/color" },
+        "keywords": { "type": "array", "items": { "type": "string" }, "description": "Plain substrings, no regex" },
+        "topics": { "type": "array", "items": { "type": "string" } },
+        "languages": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}
