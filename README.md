@@ -66,7 +66,15 @@ The token is stored only in your browser `localStorage` under `gsg:pat`. This ap
 
 ### GitHub Pages
 
-Pushes to `main` build with Vite and deploy via `actions/deploy-pages`. Source: GitHub Actions.
+Live site is served from the `gh-pages` branch (built `dist/`).
+
+Sample GitHub Actions workflow (needs a token with `workflow` scope to commit under `.github/workflows/`): see [`docs/pages.workflow.yml`](docs/pages.workflow.yml). Until then, refresh Pages with:
+
+```bash
+npm run build
+# publish dist/ to gh-pages (example)
+git subtree push --prefix dist origin gh-pages   # or any static deploy you prefer
+```
 
 ---
 
