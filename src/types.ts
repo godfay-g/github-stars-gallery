@@ -20,8 +20,10 @@ export type ViewMode = 'card' | 'list'
 
 export type Filters = {
   query: string
-  language: string | null
-  topic: string | null
+  /** empty = all */
+  languages: string[]
+  /** empty = all */
+  topics: string[]
   excludeForks: boolean
 }
 

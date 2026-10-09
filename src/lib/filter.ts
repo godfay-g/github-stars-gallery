@@ -7,10 +7,12 @@ export function applyFilters(
   tags: LocalTagMap,
 ): StarredRepo[] {
   const q = filters.query.trim().toLowerCase()
+  const langSet = filters.languages.length ? new Set(filters.languages) : null
+  const topicSet = filters.topics.length ? new Set(filters.topics) : null
   return repos.filter((r) => {
     if (filters.excludeForks && r.fork) return false
-    if (filters.language && r.language !== filters.language) return false
-    if (filters.topic && !r.topics.includes(filters.topic)) return false
+    if (langSet && (!r.language || !langSet.has(r.language))) return false
+    if (topicSet && !r.topics.some((t) => topicSet.has(t))) return false
     if (!q) return true
     const local = getRepoTags(tags, r.full_name).join(' ')
     const hay = [
